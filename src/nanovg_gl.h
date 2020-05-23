@@ -649,50 +649,6 @@ static int glnvg__renderCreate(void* uptr)
 \n  //#define fpos va
 \n  #define ftcoord vb
 \n
-\n  // we expect v1.x >= v0.x and v0, v1 translated so pixel has corners (0,0) and (1,1)
-\n  float areaEdge(vec2 v0, vec2 v1)
-\n  {
-\n    if(disableAA) {
-\n      // no AA - just determine if center of pixel is inside trapezoid
-\n      if(v1.x <= 0.5f || v0.x > 0.5f || v0.x == v1.x)
-\n        return 0.0f;
-\n      return (0.5f - v0.x)*(v1.y - v0.y) - (0.5f - v0.y)*(v1.x - v0.x) > 0.0f ? 1.0f : 0.0f;
-\n    }
-\n
-\n    // edge entirely to left or right of pixel?
-\n    //if((v0.x < 0.0f && v1.x < 0.0f) || (v0.x > 1.0f && v1.x > 1.0f) || v0.x == v1.x)
-\n    if(v1.x < 0.0f || v0.x > 1.0f || v0.x == v1.x)
-\n      return 0.0f;
-\n
-\n    vec2 dv = v1 - v0;
-\n    float slope = dv.y/dv.x;  // this could be computed in VS
-\n    // clip edge to pixel (x = 0 to 1)
-\n    if(v0.x < 0.0f)
-\n      v0 = vec2(0.0f, v0.y - slope*v0.x);
-\n    if(v1.x > 1.0f)
-\n      v1 = vec2(1.0f, v1.y + slope*(1.0f - v1.x));
-\n    if(v0.y <= 0.0f && v1.y <= 0.0f)
-\n      return 0.0f;
-\n    if(v0.y >= 1.0f && v1.y >= 1.0f)
-\n      return (v1.x - v0.x);  // *1, the height of the pixel
-\n    // clip edge to bottom of pixel (y = 0)
-\n    float invslope = dv.x/dv.y;  // 1/slope might be faster in GLSL
-\n    if(v0.y < 0.0f)
-\n      v0 = vec2(v0.x - invslope*v0.y, 0.0f);
-\n    if(v1.y < 0.0f)
-\n      v1 = vec2(v1.x - invslope*v1.y, 0.0f);
-\n    if(v1.y > 1.0f) {
-\n      float xi = v1.x + invslope*(1.0f - v1.y);
-\n      return (v1.x - xi) + (xi - v0.x)*(v0.y + 1.0f)*0.5f;  // (v1.x - xi)*1 (height)
-\n    }
-\n    if(v0.y > 1.0f) {
-\n      float xi = v0.x + invslope*(1.0f - v0.y);
-\n      return (xi - v0.x) + (v1.x - xi)*(v1.y + 1.0f)*0.5f;  // (xi - v0.x)*1 (height)
-\n    }
-\n    // final case: clipped edge entirely inside pixel
-\n    return (v1.x - v0.x)*(v1.y + v0.y)*0.5f;
-\n  }
-\n
 \n  float coversCenter(vec2 v0, vec2 v1)
 \n  {
 \n    // no AA - just determine if center of pixel (0,0) is inside trapezoid

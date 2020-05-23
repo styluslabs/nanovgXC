@@ -3,8 +3,8 @@
 nanovgXC is a small library for rendering vector graphics, based on [nanovg](https://github.com/memononen/nanovg).  The API is nearly identical to nanovg; the major user-facing changes are:
 
 * rendering of arbitrary paths with "exact coverage" antialiasing
- * it is not necessary to specify whether each subpath encloses a solid area or a hole
- * including very thin (a few pixels or less) filled paths, with which nanovg's antialiasing technique has some difficulties
+  * it is not necessary to specify whether each subpath encloses a solid area or a hole
+  * including very thin (a few pixels or less) filled paths, with which nanovg's antialiasing technique has some difficulties
 * support for both even-odd and non-zero fill rules
 * support for rendering text as paths
 * dashed strokes
@@ -13,9 +13,9 @@ If none of the above are needed for your use case, nanovg will likely have bette
 
 Two rendering backends are available:
 1. OpenGL 3 / ES3 backend implementing "exact coverage" antialiased rendering using one of three approaches:
- * GL_EXT_shader_framebuffer_fetch - iOS (also works on many desktop GPUs but with poor performance)
- * GL_ARB_shader_image_load_store/GL_OES_shader_image_atomic - Android (ES 3.1+) and Windows/Linux (GL 4 level hardware)
- * no extensions - switches between two framebuffers for each path (one for accumulating winding, one for final output).  Not as slow as it sounds on desktop GPUs - faster then software renderer for large paths.
+    * GL_EXT_shader_framebuffer_fetch - iOS (also works on many desktop GPUs but with poor performance)
+    * GL_ARB_shader_image_load_store/GL_OES_shader_image_atomic - Android (ES 3.1+) and Windows/Linux (GL 4 level hardware)
+    * no extensions - switches between two framebuffers for each path (one for accumulating winding, one for final output).  Not as slow as it sounds on desktop GPUs - faster then software renderer for large paths.
 2. software renderer backend based on [nanosvg](https://github.com/memononen/nanosvg) and [stb_truetype](https://github.com/nothings/stb) (does not use "exact coverage" technique currently - see below)
 
 Text is rendered by calculating a "summed" font atlas where each pixel stores the total coverage in the rectangle defined by that pixel and the origin (0,0).  When rendering, the texture coordinates for the corners of the current pixel are calculated and the corresponding values (s00, s01, s10, s11) from the summed font atlas are read with bilinear interpolation.  The pixel's coverage is then just s11 - s01 - s10 + s00.  Text at font sizes above a threshold set by `nvgAtlasTextThreshold()` is rendered directly as paths.  Text at all sizes below the threshold is rendered from the single atlas.
