@@ -1,0 +1,53 @@
+# simple C/C++ makefile
+# - generates files in ./Release (default) or ./Debug (with DEBUG=1 passed to make)
+
+TARGET = demo2_glfw
+SOURCES = src/nanovg.c example/perf.c example/demo.c example/example_glfw.c
+INC = src example glad
+INCSYS = ../stb ../nanosvg/src
+DEFS =
+
+# machine specific or private configuration not committed to git
+-include Makefile.local
+
+ifneq ($(windir),)
+# Windows
+
+SOURCES += glad/glad.c
+INCSYS += ../GLFW/include
+
+DEFS += _USE_MATH_DEFINES UNICODE NOMINMAX
+
+# self-built static SDL - dynamic libs avail from official SDL site
+# - see http://www.glusoft.com/tuto/SDL2-static-visual-studio.php ; need to upgrade projs to build in VS2017
+# libs below opengl32.lib needed only for static SDL; libs below winmm.lib didn't seem to be needed for older static SDL
+LIBS = \
+  ../GLFW/Release/GLFW.lib \
+  glu32.lib \
+  opengl32.lib \
+  gdi32.lib \
+  user32.lib \
+  shell32.lib \
+  winmm.lib \
+  ole32.lib \
+  oleaut32.lib \
+  advapi32.lib \
+  setupapi.lib \
+  imm32.lib \
+  version.lib
+
+RESOURCES =
+FORCECPP =
+
+include Makefile.msvc
+
+else
+# Linux
+
+SOURCES += glad/glad.c
+INCSYS += /usr/include/GLFW
+LIBS = -lpthread -ldl -lm -lGL -lglfw
+
+include Makefile.unix
+
+endif
