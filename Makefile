@@ -16,6 +16,10 @@ SOURCES += glad/glad.c
 INCSYS += ../SDL/include
 DEFS += _USE_MATH_DEFINES UNICODE NOMINMAX
 
+# only dependencies under this path will be tracked in .d files; note [\\] must be used for "\"
+# ensure that no paths containing spaces are included
+DEPENDBASE ?= c:[\\]temp[\\]styluslabs
+
 LIBS = \
   ../SDL/Release/SDL2.lib \
   glu32.lib \

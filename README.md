@@ -77,14 +77,15 @@ Building the example app:
 
 The makefile creates the demo executable demo2_sdl(.exe) in Debug/ (make DEBUG=1) or Release/ (make DEBUG=0).
 
-Windows:
-* requires Visual C++ (free Visual Studio Community Edition is fine)
-* download GNU make built for Windows: http://www.equation.com/servlet/equation.cmd?fa=make and ensure it is available in the path
-* open a Visual Studio command prompt (from the Start Menu) and run `make`
-
 Linux:
 * install SDL2 library and headers (libsdl2-dev package on Debian and Ubuntu)
 * run `make`
+
+Windows:
+* requires Visual C++ (free Visual Studio Community Edition is fine)
+* download GNU make built for Windows: http://www.equation.com/servlet/equation.cmd?fa=make and ensure it is available in the path
+* in `Makefile`, set `DEPENDBASE` to the parent folder containing all dependencies that `make` should track
+* open a Visual Studio command prompt (from the Start Menu) and run `make`
 
 iOS:
 * requires XCode to be installed (for iOS SDK) but can be built from command line
