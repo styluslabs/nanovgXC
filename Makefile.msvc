@@ -53,6 +53,10 @@ INCFLAGS += $(INCSYS:%=/I%)
 # defines
 CFLAGS += $(DEFS:%=/D%)
 
+# filter for cl with /showIncludes.  If the 5th character of line printed by cl happens to be ':'
+#  it will get swallowed - we could add more matches, e.g., /C:"^[^N]" /C:"^N[^o] etc. if this is a problem.
+DEPENDFILT = findstr /I /R /C:"^....[^:]" /C:"^Note:[ ]including[ ]file:[ ][ ]*$(DEPENDBASE)"
+
 SRCBASE=$(basename $(SOURCES))
 OBJ=$(SRCBASE:%=$(OBJDIR)/%.obj)
 QUOTEOBJ=$(SRCBASE:%="$(OBJDIR)/%.obj")
@@ -75,15 +79,14 @@ $(OBJDIR)/$(FORCECPP): CFLAGS += /TP
 
 # echo | set /p x="..." is trick to suppress newline; also used for each dependency added to file because I was
 #  unable to get rid of trailing whitespace otherwise (code that didn't add trailing whitespace when run from
-#  batch file did add one when pasted here!).  If the 5th character of line printed by cl happens to be ':'
-#  it will get swallowed - we could add more matches, e.g., /C:"^[^N]" /C:"^N[^o] etc. if this is a problem.
+#  batch file did add one when pasted here!).
 $(OBJDIR)/%.obj: %.cpp
 	echo|set /p x="$@: " > $(basename $@).d
-	$(CXX) /nologo /c $< /Fo:$@ /showIncludes $(CFLAGS) $(CXXFLAGS) $(INCFLAGS) | @FOR /F "tokens=1,2,3,*" %%A IN ('findstr /I /R /C:"^....[^:]" /C:"^Note:[ ]including[ ]file:[ ][ ]*$(DEPENDBASE)"') DO @IF "%%A"=="Note:" (echo|set /p x="%%D ">>$(basename $@).d) ELSE echo %%A %%B %%C %%D
+	$(CXX) /nologo /c $< /Fo:$@ /showIncludes $(CFLAGS) $(CXXFLAGS) $(INCFLAGS) | @FOR /F "tokens=1,2,3,*" %%A IN ('$(DEPENDFILT)') DO @IF "%%A"=="Note:" (echo|set /p x="%%D ">>$(basename $@).d) ELSE echo %%A %%B %%C %%D
 
 $(OBJDIR)/%.obj: %.c
 	echo|set /p x="$@: " > $(basename $@).d
-	$(CC) /nologo /c $< /Fo:$@ /showIncludes $(CFLAGS) $(CCFLAGS) $(INCFLAGS) | @FOR /F "tokens=1,2,3,*" %%A IN ('findstr /I /R /C:"^....[^:]" /C:"^Note:[ ]including[ ]file:[ ][ ]*$(DEPENDBASE)"') DO @IF "%%A"=="Note:" (echo|set /p x="%%D ">>$(basename $@).d) ELSE echo %%A %%B %%C %%D
+	$(CC) /nologo /c $< /Fo:$@ /showIncludes $(CFLAGS) $(CCFLAGS) $(INCFLAGS) | @FOR /F "tokens=1,2,3,*" %%A IN ('$(DEPENDFILT)') DO @IF "%%A"=="Note:" (echo|set /p x="%%D ">>$(basename $@).d) ELSE echo %%A %%B %%C %%D
 
 $(OBJDIR)/%.res: %.rc
 	$(RC) $(RCFLAGS) /fo $@ $<

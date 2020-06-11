@@ -548,7 +548,7 @@ static void swnvg__rasterizeSortedEdges(SWNVGcontext *r, SWNVGcall* call)
     xmin = r->width;
     xmax = 0;
     for (s = 0; s < SWNVG__SUBSAMPLES; ++s) {
-      // we only process once subsample scanline for non-AA
+      // we only process one subsample scanline for non-AA
       if((call->flags & NVG_PATH_NO_AA) && s != SWNVG__SUBSAMPLES/2)
         continue;
       // find center of pixel for this scanline
@@ -588,6 +588,8 @@ static void swnvg__rasterizeSortedEdges(SWNVGcontext *r, SWNVGcall* call)
         if (r->edges[e].y1 > scany) {
           SWNVGactiveEdge* z = swnvg__addActive(r, &r->edges[e], scany);
           if (z == NULL) break;
+          if (call->flags & NVG_PATH_NO_AA)
+            z->dx *= SWNVG__SUBSAMPLES;  // AA case uses per-subscanline step
           // find insertion point
           if (active == NULL) {
             active = z;
