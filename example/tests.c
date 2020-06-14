@@ -723,6 +723,7 @@ FB swap (R32F): 50 / 12.3 / 38
 iPad:
 areaEdge: 60 / 15.8 / 56
 areaEdge2: 60 / 24 / 60 - 100 big paths: 15 FPS
+SW render (GL blit): 9.5 / 13.4 - 100 big paths: 1.94 FPS
 
 iPhone 6S:
 NOTE: iPhone FPS depends on battery level! test at 100%!

@@ -24,11 +24,13 @@
 #endif
 
 #define NANOVG_SW_IMPLEMENTATION
+#define NVGSWU_GLES3
 
 #include "nanovg.h"
-#include "nanovg_sw.h"
 #include "nanovg_gl.h"
 #include "nanovg_gl_utils.h"
+#include "nanovg_sw.h"
+#include "nanovg_sw_utils.h"
 #include "demo.h"
 #include "perf.h"
 #define NVG_GL 1
@@ -50,6 +52,8 @@ int SDL_main(int argc, char* argv[])
   NVGLUframebuffer* nvgFB = NULL;
   int fbFlags = 0;
 #endif
+  void* swFB = NULL;
+  NVGSWUblitter* swBlitter = NULL;
 
   int swRender = 0;
   int run = 1;
@@ -71,7 +75,6 @@ int SDL_main(int argc, char* argv[])
   // no OpenGL whatsoever for SW renderer
   SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "0");
   SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
-
   SDL_Init(SDL_INIT_VIDEO);
 #ifdef USE_DESKTOP_GL
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -94,7 +97,6 @@ int SDL_main(int argc, char* argv[])
   SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
   SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
   //SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, 1);  // needed for sRGB on iOS
 
   initGraph(&fps, GRAPH_RENDER_FPS, "Frame Time");
 
@@ -107,8 +109,10 @@ int SDL_main(int argc, char* argv[])
     if(strcmp(argv[argi], "--fps") == 0 && ++argi < argc)
       contFPS = atoi(argv[argi]);
   }
-  if(nvgFlags & NVG_SRGB)
+  if(nvgFlags & NVG_SRGB) {
     fbFlags |= NVG_IMAGE_SRGB;
+    SDL_GL_SetAttribute(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, swRender ? 0 : 1);  // needed for sRGB on iOS
+  }
 
   sdlWindow = SDL_CreateWindow("NanoVG SDL", 0, 0, 1000, 600,
       SDL_WINDOW_RESIZABLE|SDL_WINDOW_MAXIMIZED|(swRender ? 0 : SDL_WINDOW_OPENGL)|SDL_WINDOW_ALLOW_HIGHDPI);
@@ -120,14 +124,21 @@ int SDL_main(int argc, char* argv[])
 
   // SW renderer
   SDL_Surface* sdlSurface = NULL;
-  if(swRender) {
+  if(swRender == 1) {
     sdlSurface = SDL_GetWindowSurface(sdlWindow);
     vg = nvgswCreate(nvgFlags);
     SDL_PixelFormat* fmt = sdlSurface->format;
     // have to set pixel format before loading any images
     nvgswSetFramebuffer(vg, sdlSurface->pixels, sdlSurface->w, sdlSurface->h, fmt->Rshift, fmt->Gshift, fmt->Bshift, 24);
-  }
-  else {
+  } else if (swRender == 2) {
+    sdlContext = SDL_GL_CreateContext(sdlWindow);
+#ifdef __glad_h_
+    gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress);
+#endif
+    swBlitter = nvgswuCreateBlitter();
+    vg = nvgswCreate(nvgFlags);
+    nvgswSetFramebuffer(vg, NULL, 800, 800, 0, 8, 16, 24);
+  } else {
 #ifdef NVG_GL
     sdlContext = SDL_GL_CreateContext(sdlWindow);
 #ifdef __glad_h_
@@ -176,7 +187,7 @@ int SDL_main(int argc, char* argv[])
     double t, dt;
     int mx, my;
     int winWidth, winHeight;
-    int fbWidth, fbHeight;
+    int fbWidth = 0, fbHeight = 0;
     float pxRatio;
     int prevFBO;
 
@@ -190,7 +201,7 @@ int SDL_main(int argc, char* argv[])
     // Calculate pixel ratio for hi-dpi devices.
     pxRatio = 1.0f;  //(float)fbWidth / (float)winWidth;
 
-    if(sdlContext) {
+    if (swRender == 0) {
 #ifdef NVG_GL
       SDL_GL_GetDrawableSize(sdlWindow, &fbWidth, &fbHeight);
       if(useFramebuffer) {
@@ -206,8 +217,7 @@ int SDL_main(int argc, char* argv[])
       else
         nvgluClear(nvgRGBAf(0.3f, 0.3f, 0.3f, 0.0f));
 #endif
-    }
-    else {
+    } else if (swRender == 1) {
       sdlSurface = SDL_GetWindowSurface(sdlWindow);  // has to be done every frame in case window resizes
       fbWidth = sdlSurface->w;
       fbHeight = sdlSurface->h;
@@ -215,6 +225,12 @@ int SDL_main(int argc, char* argv[])
       nvgswSetFramebuffer(vg, sdlSurface->pixels, fbWidth, fbHeight, fmt->Rshift, fmt->Gshift, fmt->Bshift, 24);
       SDL_FillRect(sdlSurface, NULL, SDL_MapRGB(sdlSurface->format, 255, 255, 255));
       SDL_LockSurface(sdlSurface);
+    } else if (swRender == 2) {
+      SDL_GL_GetDrawableSize(sdlWindow, &fbWidth, &fbHeight);
+      if(!swFB || fbWidth != swBlitter->width || fbHeight != swBlitter->height)
+        swFB = realloc(swFB, fbWidth*fbHeight*4);
+      memset(swFB, (int)(0.3f*255), fbWidth*fbHeight*4);
+      nvgswSetFramebuffer(vg, swFB, fbWidth, fbHeight, 0, 8, 16, 24);
     }
 
     // if we want to use win dimensions (i.e. physical units) instead of framebuffer dimensions (pixels), so
@@ -239,9 +255,9 @@ int SDL_main(int argc, char* argv[])
     //fillRect(vg, 250, 550, 200, 200, nvgRGBA(0,0,255,128));
     //fillRect(vg, 250, 250, 200, 200, nvgRGBA(0,0,255,128));
 
-    if(testNum % 3 == 0)
+    if (testNum % 3 == 0)
       renderDemo(vg, mx,my, fbWidth, fbHeight, t - t0, blowup, &data);
-    else if(testNum % 3 == 1)
+    else if (testNum % 3 == 1)
       bigPathsTest(vg, fbWidth, fbHeight);
     else
       smallPathsTest(vg, fbWidth, fbHeight);
@@ -259,7 +275,7 @@ int SDL_main(int argc, char* argv[])
     //glDisable(GL_SCISSOR_TEST);
 
 #ifdef NVG_GL
-    if(useFramebuffer)
+    if (useFramebuffer)
       nvgluBlitFramebuffer(nvgFB, prevFBO);  // blit to prev FBO and rebind it
 #endif
 
@@ -268,12 +284,15 @@ int SDL_main(int argc, char* argv[])
       saveScreenShot(fbWidth, fbHeight, premult, "dump.png");
     }
 
-    if(sdlSurface) {
+    if (swRender == 0) {
+      SDL_GL_SwapWindow(sdlWindow);
+    } else if (swRender == 1) {
       SDL_UnlockSurface(sdlSurface);
       SDL_UpdateWindowSurface(sdlWindow);
-    }
-    else
+    } else if (swRender == 2) {
+      nvgswuBlit(swBlitter, swFB, fbWidth, fbHeight, 0, 0, fbWidth, fbHeight);
       SDL_GL_SwapWindow(sdlWindow);
+    }
     //glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, (GLenum[]){GL_COLOR});  //???
 
     dirty = 0;
