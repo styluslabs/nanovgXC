@@ -327,11 +327,11 @@ static void convexFillTest(NVGcontext* vg)
 
 static struct NVGcolor nvgColUint(unsigned int col)
 {
-  struct NVGcolor c;
-  c.r = (col & 0xff) / 255.0f;
-  c.g = ((col >> 8) & 0xff) / 255.0f;
-  c.b = ((col >> 16) & 0xff) / 255.0f;
-  c.a = ((col >> 24) & 0xff) / 255.0f;
+  struct NVGcolor c = {col};
+  //c.r = (col & 0xff) / 255.0f;
+  //c.g = ((col >> 8) & 0xff) / 255.0f;
+  //c.b = ((col >> 16) & 0xff) / 255.0f;
+  //c.a = ((col >> 24) & 0xff) / 255.0f;
   return c;
 }
 
@@ -379,7 +379,7 @@ static void nsvgRender(NVGcontext* vg, NSVGimage* image, float bounds[4])
         }
         if(path->closed)
           nvgClosePath(vg);
-        //nvgPathWinding(vg, NVG_CCW);
+        nvgPathWinding(vg, NVG_AUTOW);
       }
       if(shape->fill.type != NSVG_PAINT_NONE) {
         if(shape->fill.type == NSVG_PAINT_COLOR)
@@ -404,7 +404,7 @@ static void nsvgRender(NVGcontext* vg, NSVGimage* image, float bounds[4])
 #include "Opt_page1.c"
 #endif
 
-static void svgTest(NVGcontext* vg, int fbWidth, int fbHeight)
+static void svgTest(NVGcontext* vg, const char* filename, int fbWidth, int fbHeight)
 {
   static NSVGimage* image = NULL;
 
@@ -416,7 +416,7 @@ static void svgTest(NVGcontext* vg, int fbWidth, int fbHeight)
     free(str);
   }
 #else
-  static const char* filename = DATA_PATH("Opt_page1.svg");  //argc > 1 ? argv[1] :
+  //static const char* filename = DATA_PATH("Opt_page1.svg");  //argc > 1 ? argv[1] :
   if(!image) {
     image = nsvgParseFromFile(filename, "px", 96.0f);
     if(!image) {

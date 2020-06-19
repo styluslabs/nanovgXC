@@ -71,6 +71,12 @@ int SDL_main(int argc, char* argv[])
   float angle = 0;
   float fontsize = 20.0f;
   double prevt = 0;
+  // default file for svg test
+  const char* svgFile = DATA_PATH("tiger.svg");  //"Opt_page1.svg");
+
+#ifdef _WIN32
+  SetProcessDPIAware();
+#endif
 
   // no OpenGL whatsoever for SW renderer
   SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "0");
@@ -108,6 +114,8 @@ int SDL_main(int argc, char* argv[])
       swRender = atoi(argv[argi]);
     if(strcmp(argv[argi], "--fps") == 0 && ++argi < argc)
       contFPS = atoi(argv[argi]);
+    if(strcmp(argv[argi], "--svg") == 0 && ++argi < argc)
+      svgFile = argv[argi];
   }
   if(nvgFlags & NVG_SRGB) {
     fbFlags |= NVG_IMAGE_SRGB;
@@ -184,7 +192,7 @@ int SDL_main(int argc, char* argv[])
 
   while (run && !g_hasGLError)
   {
-    double t, dt;
+    double t, dt, cpudt;
     int mx, my;
     int winWidth, winHeight;
     int fbWidth = 0, fbHeight = 0;
@@ -195,6 +203,7 @@ int SDL_main(int argc, char* argv[])
     dt = t - prevt;
     prevt = t;
     updateGraph(&fps, dt);
+    //NVG_LOG("Frame time: %f ms; CPU time before nvgEndFrame: %f ms\n", dt*1000, cpudt*1000);
 
     SDL_GetMouseState(&mx, &my);
     SDL_GetWindowSize(sdlWindow, &winWidth, &winHeight);
@@ -255,20 +264,21 @@ int SDL_main(int argc, char* argv[])
     //fillRect(vg, 250, 550, 200, 200, nvgRGBA(0,0,255,128));
     //fillRect(vg, 250, 250, 200, 200, nvgRGBA(0,0,255,128));
 
-    if (testNum % 3 == 0)
+    if (testNum % 4 == 0)
       renderDemo(vg, mx,my, fbWidth, fbHeight, t - t0, blowup, &data);
-    else if (testNum % 3 == 1)
+    else if (testNum % 4 == 1)
       bigPathsTest(vg, fbWidth, fbHeight);
-    else
+    else if (testNum % 4 == 2)
       smallPathsTest(vg, fbWidth, fbHeight);
-    //else
-    //  svgTest(vg, fbWidth, fbHeight);
+    else
+      svgTest(vg, svgFile, fbWidth, fbHeight);
 
     nvgResetTransform(vg);
     nvgTranslate(vg, 0, fbHeight - 50);  // move to bottom away from status bar
     if(contFPS)
       renderGraph(vg, 5,5, &fps);
 
+    cpudt = SDL_GetPerformanceCounter()*countToSec - prevt;
     //glEnable(GL_SCISSOR_TEST);
     //glScissor(0, 0, 400, 200);  //fbHeight - 200, 400, 200);
     nvgEndFrame(vg);
