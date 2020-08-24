@@ -72,7 +72,7 @@ int SDL_main(int argc, char* argv[])
   float fontsize = 20.0f;
   double prevt = 0;
   // default file for svg test
-  const char* svgFile = DATA_PATH("tiger.svg");  //"Opt_page1.svg");
+  const char* svgFile = DATA_PATH("svg/tiger.svg");  //"svg/Opt_page1.svg");
 
 #ifdef _WIN32
   SetProcessDPIAware();
@@ -267,7 +267,7 @@ int SDL_main(int argc, char* argv[])
     if (testNum % 4 == 0)
       renderDemo(vg, mx,my, fbWidth, fbHeight, t - t0, blowup, &data);
     else if (testNum % 4 == 1)
-      bigPathsTest(vg, fbWidth, fbHeight);
+      bigPathsTest(vg, 20, fbWidth, fbHeight);
     else if (testNum % 4 == 2)
       smallPathsTest(vg, fbWidth, fbHeight);
     else

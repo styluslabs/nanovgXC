@@ -460,10 +460,10 @@ static void smallPathsTest(NVGcontext* vg, int fbWidth, int fbHeight)
   //fprintf(stderr, "smallPaths setup took %f ms\n", (SDL_GetPerformanceCounter() - t0)/1E6);
 }
 
-static void bigPathsTest(NVGcontext* vg, int fbWidth, int fbHeight)
+static void bigPathsTest(NVGcontext* vg, int npaths, int fbWidth, int fbHeight)
 {
   nvgFillColor(vg, nvgRGBA(0,0,255,128));
-  for(int ii = 0; ii < 20; ++ii) {
+  for(int ii = 0; ii < npaths; ++ii) {
     nvgBeginPath(vg);
     nvgRect(vg, 50 + 3*ii, 50 + 3*ii, 600, 1200);
     nvgFill(vg);
@@ -695,6 +695,15 @@ static void swRenderTest(NVGcontext* vg)
 /* Benchmarks:
 May 2020 benchmarks (SW renderer, areaEdge2):
 big = bigPathsTest(), small = smallPathsTest()
+
+glDrawElements (draw-elements branch): 36 floats per segment (6 verts * 3 vec2) -> 16 (4 verts * 2 vec2)
+- desktop: maybe slightly faster on paris-30k (4 FPS vs 3.75) ... mostly due to CPU?
+- iPad: no difference for small paths test (or big paths test)
+
+iPhone 6S big/small/tiger: 36/33/51; GL_BLEND: 33.7 / 30.6 / 49.2; blend outColor.a: 35.2 / 32 / 50.8
+
+4x larger image for image atomic: 36 FPS (vs 26 FPS) for big paths test; no change for small paths
+... significant improvement! paris-30k: 4.2 FPS vs 3.75 (just increase image height in glnvg__renderFlush)
 
 DEBUG=0 performance tests (half screen in Linux VM):
 - GL: 37 FPS / 9.2 FPS (big / small)

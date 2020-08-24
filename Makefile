@@ -46,7 +46,7 @@ else ifneq ($(XPC_FLAGS),)
 APPDIR = $(TARGET).app
 DEFS += GLES_SILENCE_DEPRECATION
 #iOS/Icon.png
-IOSRES += iOS/Info.plist example/images example/fonts
+IOSRES += iOS/Info.plist example/images example/fonts example/svg
 
 # Makefile.local should define PROVISIONING_PROFILE (path to .mobileprovision), SIGNING_ID (for codesign), TEAM_ID, and BUNDLE_ID
 XCENT = iOS/Dev.app.xcent

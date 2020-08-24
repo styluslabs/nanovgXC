@@ -365,7 +365,8 @@ static int swnvg__clampi(int a, int mn, int mx) { return a < mn ? mn : (a > mx ?
 // all modern compilers appear to have built-in optimizations like this for x/255 and other const division
 //static inline int swnvg__div255(int x) { return ((x+1) * 257) >> 16 } ;  // this isn't exact in general
 
-// note that we assume color is not premultiplied!
+// note that we assume color is not premultiplied and do the equivalent of
+//  glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 static void swnvg__blendSRGB(unsigned char* dst, int cover, int cr, int cg, int cb, int ca)
 {
   int srca = (cover * ca)/255;
@@ -374,7 +375,7 @@ static void swnvg__blendSRGB(unsigned char* dst, int cover, int cr, int cg, int 
   int r = (srca*cr + ia*(unsigned int)dst[0])/255;
   int g = (srca*cg + ia*(unsigned int)dst[1])/255;
   int b = (srca*cb + ia*(unsigned int)dst[2])/255;
-  int a = (srca*ca + ia*(unsigned int)dst[3])/255;
+  int a = srca + (ia*(unsigned int)dst[3])/255;  // *ca
   // write
   dst[0] = (unsigned char)r;
   dst[1] = (unsigned char)g;
@@ -396,7 +397,7 @@ static void swnvg__blendLinear(unsigned char* dst, int cover, int cr, int cg, in
   int r = (srca*s0 + ia*d0)/255;
   int g = (srca*s1 + ia*d1)/255;
   int b = (srca*s2 + ia*d2)/255;
-  int a = (srca*ca + ia*(unsigned int)dst[3])/255;
+  int a = srca + (ia*(unsigned int)dst[3])/255;  //*ca
   // write to bitmap
   dst[0] = linearToSRGB[r];  // swnvg__mini(r, 2047)];  -- clamping only needed for premultiplication w/
   dst[1] = linearToSRGB[g];  // swnvg__mini(g, 2047)];  --  conversion back to ints

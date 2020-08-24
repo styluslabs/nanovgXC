@@ -768,8 +768,6 @@ static int glnvg__renderCreate(void* uptr)
 \n    if (type == 0) {  // clear winding number (not used in USE_FRAMEBUFFER_FETCH case)
 \n      result = vec4(0.0f);
 \n    } else if (type == 1) {  // calculate winding
-\n      //vec2 p = fpos - 0.5f;
-\n      //float W = (va.x < vb.x ? areaEdge(va - p, vb - p) : -areaEdge(vb - p, va - p));
 \n      float W = areaEdge2(vb - fpos, va - fpos);
 \n  #ifdef USE_FRAMEBUFFER_FETCH
 \n      result = vec4(0.0f);
@@ -810,12 +808,10 @@ static int glnvg__renderCreate(void* uptr)
 \n      //result = innerCol*pow(vec4(cov), vec4(1.5,1.5,1.5,0.5));
 \n    }
 \n  #ifdef USE_FRAMEBUFFER_FETCH
-\n    outColor.rgb = result.rgb + (1.0f - result.a)*outColor.rgb;
+\n    outColor = result + (1.0f - result.a)*outColor;
 \n    //outColor.rgb = pow(pow(result.rgb, vec3(1.5/2.2)) + (1.0f - result.a)*pow(outColor.rgb, vec3(1.5/2.2)), vec3(2.2/1.5));
-\n    outColor.a = 1.0f;  // interestingly, blending alpha component is a bit slower than setting to const.
 \n    inoutWinding = winding;
 \n  #else
-\n    //if(int(gl_FragCoord.x) > imgParams.w)  outColor = vec4(1,0,0,1);  else
 \n    outColor = result;
 \n  #endif
 \n  }
@@ -1322,6 +1318,8 @@ static void glnvg__renderFlush(void* uptr)
 
   glUseProgram(gl->shader.prog);
   glDisable(GL_CULL_FACE);
+  // GL_BLEND works with FB fetch (since we changed from float to int accum), but a tiny bit slower (and
+  //  not well-tested on other devices), so we'll leave disabled for now
   if (gl->renderMethod == NVGL_RENDER_FB_FETCH)
     glDisable(GL_BLEND);
   else
