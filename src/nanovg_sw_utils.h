@@ -139,6 +139,10 @@ void nvgswuDeleteBlitter(NVGSWUblitter* ctx)
   glDeleteShader(ctx->frag);
 }
 
+#ifdef NVGSWU_GLES2
+#define GL_RGBA8 GL_RGBA
+#endif
+
 void nvgswuBlit(NVGSWUblitter* ctx, void* pixels, int width, int height, int x, int y, int w, int h)
 {
   glActiveTexture(GL_TEXTURE0);
