@@ -20,6 +20,7 @@ DEFS += _USE_MATH_DEFINES UNICODE NOMINMAX
 # ensure that no paths containing spaces are included
 DEPENDBASE ?= c:[\\]temp[\\]styluslabs
 
+# for dynamically linked Windows SDL libraries, both SDL2.lib and SDL2main.lib are needed
 LIBS = \
   ../SDL/Release/SDL2.lib \
   glu32.lib \

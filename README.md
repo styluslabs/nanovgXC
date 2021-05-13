@@ -69,7 +69,7 @@ nvgEndFrame(vg);
 
 ## Example app ##
 
-The example app uses [SDL2](https://www.libsdl.org/): build SDL2 for your platform then edit the path to SDL library in `Makefile` as needed (the default is `../SDL/Release/`).  For Linux, the appropriate package can be installed instead of building SDL.
+The example app uses [SDL2](https://www.libsdl.org/): build SDL2 for your platform then edit the path to SDL library in `Makefile` as needed (the default is `../SDL/Release/`).  For Linux, the appropriate package can be installed instead of building SDL.  The exact versions of SDL used for development are [here](https://github.com/pbsurf/SDL).
 
 A [GLFW](https://www.glfw.org/) version of the sample app is also provided for Windows and Linux.  Replace `make` with `make -f Makefile.glfw` to use.
 
