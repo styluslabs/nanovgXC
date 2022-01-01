@@ -135,6 +135,7 @@ enum NVGimageFlags {
   NVG_IMAGE_PREMULTIPLIED    = 1<<4,  // Image data has premultiplied alpha.
   NVG_IMAGE_NEAREST          = 1<<5,  // Image interpolation is Nearest instead Linear
   NVG_IMAGE_SRGB             = 1<<6,  // Create SRGB texture for image - for use with SRGB framebuffer
+  NVG_IMAGE_NOCOPY           = 1<<7,  // Don't make a copy of image data (SW renderer only)
 };
 
 // Begin drawing a new frame
@@ -595,7 +596,11 @@ void nvgFontFace(NVGcontext* ctx, const char* font);
 void nvgAtlasTextThreshold(NVGcontext* ctx, float px);
 
 // Draws text string at specified location. If end is specified only the sub-string up to the end is drawn.
+// Returns horizontal advance of the text plus initial x (i.e., where the next character would be drawn)
 float nvgText(NVGcontext* ctx, float x, float y, const char* string, const char* end);
+
+// Creates paths for text string to be rendered with nvgFill() and/or nvgStroke()
+float nvgTextAsPaths(NVGcontext* ctx, float x, float y, const char* string, const char* end);
 
 // Draws multi-line text string at specified location wrapped at the specified width. If end is specified only the sub-string up to the end is drawn.
 // White space is stripped at the beginning of the rows, the text is split at word boundaries or when new-line characters are encountered.
@@ -604,7 +609,7 @@ void nvgTextBox(NVGcontext* ctx, float x, float y, float breakRowWidth, const ch
 
 // Measures the specified text string. Parameter bounds should be a pointer to float[4],
 // if the bounding box of the text should be returned. The bounds value are [xmin,ymin, xmax,ymax]
-// Returns the horizontal advance of the measured text (i.e. where the next character should drawn).
+// Returns the horizontal advance (width) of the measured text (not including initial x).
 // Measured values are returned in local coordinate space.
 float nvgTextBounds(NVGcontext* ctx, float x, float y, const char* string, const char* end, float* bounds);
 

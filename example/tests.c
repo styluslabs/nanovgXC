@@ -592,8 +592,24 @@ static void textTests(NVGcontext* vg)
    nvgText(vg, 150, 380, "123ABC", NULL);
 }
 
-static void textTest2(NVGcontext* vg)
+static void textTest2(NVGcontext* vg, int testNum)
 {
+  int asPaths = testNum % 2;
+  nvgAtlasTextThreshold(vg, asPaths ? 0.0f : 48.0f);
+  nvgFontFace(vg, "sans");
+  nvgFillColor(vg, nvgRGBA(0,0,0,255));
+  char longstr[96];
+  for(char c = 32; c < 127; ++c)
+    longstr[(int)c-32] = c;
+  longstr[95] = '\0';
+
+  float fonth = 6;
+  for(int y = 20; y < 1400; y += 1.25*fonth) {
+    nvgFontHeight(vg, fonth);
+    nvgText(vg, 250, y, longstr, NULL);
+    fonth += 0.5;
+  }
+
   //fillRect(vg, 50, 50, 600, 600, nvgRGBA(0, 0, 0, 255));
   //nvgFillColor(vg, nvgRGBA(255,255,255,255));
   //nvgFontFace(vg, "sans");

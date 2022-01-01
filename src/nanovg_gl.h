@@ -37,10 +37,12 @@ enum NVGLcreateFlags {
 #if defined NANOVG_GL3_IMPLEMENTATION
 #  define NANOVG_GL3 1
 #  define NANOVG_GL_IMPLEMENTATION 1
+#  define NANOVG_GLU_IMPLEMENTATION 1
 #  define NANOVG_GL_USE_UNIFORMBUFFER 1  // uniform buffers avail in OpenGL 3.1+
 #elif defined NANOVG_GLES3_IMPLEMENTATION
 #  define NANOVG_GLES3 1
 #  define NANOVG_GL_IMPLEMENTATION 1
+#  define NANOVG_GLU_IMPLEMENTATION 1
 //#  define NANOVG_GL_USE_UNIFORMBUFFER 1  ... slower, at least on desktop and iPhone 6S
 #endif
 
@@ -479,6 +481,77 @@ static void glnvg__getUniforms(GLNVGshader* shader)
 #endif
 }
 
+/* Consider a directed line segment va -> vb of the path being rendered:
+
+^ Y      v=(v0.x - 0.55, ymax + 0.55)
+| ymax   ^       v1
+|  n=(-1,1) XXXXX/| n=(1,1) -> v=(v1.x + 0.55, ymax + 0.55)
+|           XXXX/#|
+|           XXX/##|
+|           XX/###|
+|           X/####|   v0,v1 = va,vb if va.x < vb.x else vb,va
+|           /#####|
+|         v0|#####|
+|           |#####|
+| pathYmin__|#####|__
+|   n=(-1,-1)     n=(1,-1) -> v=(v1.x + 0.55, pathYmin - 0.55)
+|          ^ v=(v0.x - 0.55, pathYmin - 0.55)
++---------------------> X
+
+nanovg.c converts all paths to polygons by converting strokes to fills and approximating curves w/ line
+ segments.  For each path, the minimum y value (i.e. bottom of AABB) is passed to the VS as pathYmin.
+
+VS: for each line segment of the polygon, 1 quad = 2 triangles = 6 vertices (4 unique) are generated; the
+ vertices are distinguished by "normal_in" in the VS (n=... in the figure).  The VS outputs vertices (v=... in
+ the figure) to create the quad '#' + 'X', expanding the edges of the quad by 0.55px (0.5px wasn't sufficient
+ in some cases on iOS ... why?) to ensure partially convered pixels are included (triangle must cover center
+ of a pixel for the pixel to be included by OpenGL rasterization).  Note that the expansion will not be
+ considered part of '#' + 'X' in the discussion below.
+
+1st FS pass: With fpos being the center of the pixel, areaEdge2(vb - fpos, va - fpos) in the fragment shader
+ calculates the signed area of the intersection of trapezoid '#' with the 1px x 1px square for the pixel.
+ The area will be zero if va.x == vb.x or if the pixel lies entirely in the 'X' region.  Otherwise, it will
+ be positive if va.x > vb.x and negative of va.x < vb.x.  This is converted to a fixed point value and added
+ to the accumulated area from all trapezoids (i.e., edges) for the pixel, stored in the framebuffer for
+ framebuffer fetch or swap, or in an iimage2D for image load/store.  In the latter case, pixels of the
+ bounding boxes of each polygon are mapped to sequential runs of pixels in the iimage2D.
+
+2nd FS pass: The intersection area (i.e. pixel coverage) is read using framebuffer fetch or image load/store
+ and multiplied by the input RGBA color (solid color, gradient, or color from image - usually not antialiased!)
+*/
+
+/* Super-sampled SDF text rendering - super-sampling gives big improvement at very small sizes; quality is
+ comparable to summed text; w/ supersamping, FPS is actually slightly lower
+
+\n  float sdfCov(float D, float sdfscale)
+\n  {
+\n    // with SDF we could potentially counteract effect of linear blending by inflating char ... note that this
+\n    //  only works for SDF (not e.g. summed text) since we can have D < 0
+\n    // Also, perhaps we could use derivative info (and/or distance at pixel center) to improve?
+\n    return D > 0.0f ? clamp((D - 0.5f)/sdfscale + 0.5f, 0.0f, 1.0f) : 0.0f;  //+ 0.25f
+\n  }
+\n
+\n  float superSDF(sampler2D tex, vec2 st)
+\n  {
+\n    vec2 tex_wh = vec2(textureSize(tex, 0));  // convert from ivec2 to vec2
+\n    st = st + vec2(4.0)/tex_wh;  // account for 4 pixel padding in SDF
+\n    float s = (32.0f/255.0f)*paintMat[0][0];  // 32/255 is STBTT pixel_dist_scale
+\n    //return sdfCov(texture2D(tex, st).r, s);  // single sample
+\n    s = 0.5f*s;  // we're sampling 4 0.5x0.5 subpixels
+\n    float dx = paintMat[0][0]/tex_wh.x/4.0f;
+\n    float dy = paintMat[1][1]/tex_wh.y/4.0f;
+\n
+\n    //vec2 stextent = extent/tex_wh;  ... clamping doesn't seem to be necessary
+\n    //vec2 stmin = floor(st*stextent)*stextent;
+\n    //vec2 stmax = stmin + stextent - vec2(1.0f);
+\n    float d11 = texture2D(tex, st + vec2( dx, dy)).r;  // clamp(st + ..., stmin, stmax)
+\n    float d10 = texture2D(tex, st + vec2( dx,-dy)).r;
+\n    float d01 = texture2D(tex, st + vec2(-dx, dy)).r;
+\n    float d00 = texture2D(tex, st + vec2(-dx,-dy)).r;
+\n    return 0.25f*(sdfCov(d11, s) + sdfCov(d10, s) + sdfCov(d01, s) + sdfCov(d00, s));
+\n  }
+*/
+
 // makes editing easier, but disadvantage is that commas can only be used inside ()
 #define NVG_QUOTE(s) #s
 
@@ -793,16 +866,13 @@ static int glnvg__renderCreate(void* uptr)
 \n      vec2 pt = (paintMat * vec3(fpos,1.0)).xy / extent;
 \n      vec4 color = texture2D(tex, pt);
 \n      if (texType == 1) color = vec4(color.xyz*color.w,color.w);
-\n      if (texType == 2) color = vec4(color.x);
+\n      else if (texType == 2) color = vec4(color.x);
 \n      // Apply color tint and alpha.
 \n      color *= innerCol;
 \n      // Combine alpha
 \n      result = color*(scissorMask(fpos)*coverage());
 \n    } else if (type == 5) {  // Textured tris - only used for text, so no need for coverage()
-\n      //vec4 color = texture2D(tex, ftcoord);
-\n      //if (texType == 1) color = vec4(color.xyz*color.w,color.w);
-\n      //if (texType == 2) color = vec4(color.x);
-\n      float cov = scissorMask(fpos)*summedTextCov(tex, ftcoord);
+\n      float cov = scissorMask(fpos)*summedTextCov(tex, ftcoord);  //superSDF(tex, ftcoord);
 \n      result = vec4(cov) * innerCol;
 \n      // this is wrong - see alternative outColor calc below for correct text gamma handling
 \n      //result = innerCol*pow(vec4(cov), vec4(1.5,1.5,1.5,0.5));

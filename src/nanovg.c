@@ -10,7 +10,7 @@
 
 #include "nanovg.h"
 #define FONTSTASH_IMPLEMENTATION
-#define FONS_SUMMED
+#define FONS_SUMMED  //FONS_SDF
 #include "fontstash.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -2135,7 +2135,11 @@ void nvgAtlasTextThreshold(NVGcontext* ctx, float px)
 
     if (ctx->fontImageIdx < 0) {
       ctx->fontImages[0] = ctx->params.renderCreateTexture(
+#ifdef FONS_SUMMED
           ctx->params.userPtr, NVG_TEXTURE_FLOAT, w, h, NVG_IMAGE_NEAREST, NULL);
+#else
+          ctx->params.userPtr, NVG_TEXTURE_ALPHA, w, h, 0, NULL);
+#endif
       if (ctx->fontImages[0] == 0) return;
       ctx->fontImageIdx = 0;
     }
@@ -2181,7 +2185,11 @@ static int nvg__allocTextAtlas(NVGcontext* ctx)
     if (iw > NVG_MAX_FONTIMAGE_SIZE || ih > NVG_MAX_FONTIMAGE_SIZE)
       iw = ih = NVG_MAX_FONTIMAGE_SIZE;
     ctx->fontImages[ctx->fontImageIdx+1] = ctx->params.renderCreateTexture(
+#ifdef FONS_SUMMED
         ctx->params.userPtr, NVG_TEXTURE_FLOAT, iw, ih, NVG_IMAGE_NEAREST, NULL);
+#else
+        ctx->params.userPtr, NVG_TEXTURE_ALPHA, iw, ih, 0, NULL);
+#endif
   }
   ++ctx->fontImageIdx;
   fonsGetAtlasSize(ctx->fs, NULL, NULL, &atlasFontPx);
@@ -2268,7 +2276,7 @@ static float nvg__textAsPaths(NVGcontext* ctx, float x, float y, const char* str
     stbtt_FreeShape(font, points);
     memcpy(state->xform, xform, sizeof(float)*6);
   }
-  nvgFill(ctx);
+  //nvgFill(ctx); -- need to support stoked text too!
   return iter.nextx;
 }
 
@@ -2278,11 +2286,13 @@ static float nvg__textFromAtlas(NVGcontext* ctx, float x, float y, const char* s
   FONStextIter iter, prevIter;
   FONSquad q;
   NVGvertex* verts;
+  float* tf = state->xform;
+  float sx, sy, qsqx, qtqy;
   int cverts = 0;
   int nverts = 0;
   // flag to reverse order of triangle vertices to ensure CCW winding (front face)
   // not sure if this is the correct criterion in general to determine if we need to reverse order
-  int rev = (state->xform[0] * state->xform[3] < 0) ? 1 : 0;
+  int rev = (tf[0] * tf[3] < 0) ? 1 : 0;
   if(state->fontId == FONS_INVALID) return x;
   if (end == NULL)
     end = string + strlen(string);
@@ -2308,11 +2318,18 @@ static float nvg__textFromAtlas(NVGcontext* ctx, float x, float y, const char* s
         break;
     }
     prevIter = iter;
+    // expand by half pixel - note that we must expand texture coords to match expansion of quad
+    sx = nvg__sqrtf(tf[0]*tf[0] + tf[2]*tf[2]);
+    sy = nvg__sqrtf(tf[1]*tf[1] + tf[3]*tf[3]);
+    qsqx = (q.s1 - q.s0)/(q.x1 - q.x0);
+    qtqy = (q.t1 - q.t0)/(q.y1 - q.y0);
+    q.s0 -= qsqx*0.5f/sx; q.s1 += qsqx*0.5f/sx; q.t0 -= qtqy*0.5f/sy; q.t1 += qtqy*0.5f/sy;
+    q.x0 -= 0.5f/sx; q.x1 += 0.5f/sx; q.y0 -= 0.5f/sy; q.y1 += 0.5f/sy;
     // Transform corners.
-    nvgTransformPoint(&c[0],&c[1], state->xform, q.x0, q.y0);
-    nvgTransformPoint(&c[2],&c[3], state->xform, q.x1, q.y0);
-    nvgTransformPoint(&c[4],&c[5], state->xform, q.x1, q.y1);
-    nvgTransformPoint(&c[6],&c[7], state->xform, q.x0, q.y1);
+    nvgTransformPoint(&c[0],&c[1], tf, q.x0, q.y0);
+    nvgTransformPoint(&c[2],&c[3], tf, q.x1, q.y0);
+    nvgTransformPoint(&c[4],&c[5], tf, q.x1, q.y1);
+    nvgTransformPoint(&c[6],&c[7], tf, q.x0, q.y1);
     // Create triangles
     if (nverts+6 <= cverts) {
       nvg__vset(&verts[nverts], c[0], c[1], q.s0, q.t0);
@@ -2341,10 +2358,18 @@ float nvgText(NVGcontext* ctx, float x, float y, const char* string, const char*
   if(ctx->atlasTextThresh <= 0
       || nvg__sqrtf(t[0]*t[0] + t[2]*t[2])*pxsize > ctx->atlasTextThresh
       || nvg__sqrtf(t[1]*t[1] + t[3]*t[3])*pxsize > ctx->atlasTextThresh
-      || ((ctx->params.flags & NVG_ROTATED_TEXT_AS_PATHS) && (t[1] != 0.0f || t[2] != 0.0f)))
-    return nvg__textAsPaths(ctx, x, y, string, end);
-  else
-    return nvg__textFromAtlas(ctx, x, y, string, end);
+      || ((ctx->params.flags & NVG_ROTATED_TEXT_AS_PATHS) && (t[1] != 0.0f || t[2] != 0.0f))) {
+    float nextx = nvg__textAsPaths(ctx, x, y, string, end);
+    nvgFill(ctx);
+    return nextx;
+  }
+  return nvg__textFromAtlas(ctx, x, y, string, end);
+}
+
+float nvgTextAsPaths(NVGcontext* ctx, float x, float y, const char* string, const char* end)
+{
+  nvg__fonsSetup(ctx, 1.0f);
+  return nvg__textAsPaths(ctx, x, y, string, end);
 }
 
 void nvgTextBox(NVGcontext* ctx, float x, float y, float breakRowWidth, const char* string, const char* end)

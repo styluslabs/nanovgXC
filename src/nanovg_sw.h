@@ -679,7 +679,8 @@ static void swnvg__rasterizeQuad(SWNVGcontext* rast, SWNVGcall* call, SWNVGtextu
   int ca = COLOR3(call->innerCol);
 
   int extentx = (int)call->extent[0], extenty = (int)call->extent[1];
-  int ijminx = ((int)(s00/extentx))*extentx, ijminy = ((int)(t00/extenty))*extenty;
+  // use texcoord center to figure out which atlas rect we are reading from
+  int ijminx = ((int)(s00/extentx + 0.5f))*extentx, ijminy = ((int)(t00/extenty + 0.5f))*extenty;
   int ijmaxx = ijminx + extentx - 1, ijmaxy = ijminy + extenty - 1;
 
   int xmin = swnvg__maxi(call->bounds[0], (int)v00->x0);
@@ -751,38 +752,51 @@ static int swnvg__renderCreate(void* uptr)
   return 1;
 }
 
-static int swnvg__renderCreateTexture(void* uptr, int type, int w, int h, int imageFlags, const void* data)
+static void swnvg__copyRGBAData(SWNVGcontext* gl, SWNVGtexture* tex, const void* data)
 {
   int ii;
+  int npix = tex->width*tex->height;
+  rgba32_t* dest = (rgba32_t*)tex->data;
+  rgba32_t* src = (rgba32_t*)data;
+  if(tex->flags & NVG_IMAGE_PREMULTIPLIED) {
+    // undo premultiplication
+    for(ii = 0; ii < npix; ++ii, ++dest, ++src) {
+      int r = COLOR0(*src);
+      int g = COLOR1(*src);
+      int b = COLOR2(*src);
+      int a = COLOR3(*src);
+      *dest = ((255*r)/a << gl->rshift | (255*g)/a << gl->gshift | (255*b)/a << gl->bshift | a << gl->ashift);
+    }
+  }
+  else if(gl->rshift == 0 && gl->gshift == 8 && gl->bshift == 16 && gl->ashift == 24) {
+    memcpy(dest, src, npix*4);
+  }
+  else {
+    for(ii = 0; ii < npix; ++ii, ++dest, ++src) {
+      int r = COLOR0(*src);
+      int g = COLOR1(*src);
+      int b = COLOR2(*src);
+      int a = COLOR3(*src);
+      *dest = (r << gl->rshift | g << gl->gshift | b << gl->bshift | a << gl->ashift);
+    }
+  }
+}
+
+static int swnvg__renderCreateTexture(void* uptr, int type, int w, int h, int imageFlags, const void* data)
+{
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
   SWNVGtexture* tex = swnvg__allocTexture(gl);
-  tex->width = w;  tex->height = h;  tex->flags = imageFlags; tex->type = type;
-  tex->data = malloc(w*h*4);
-  if(data) {
-    rgba32_t* dest = (rgba32_t*)tex->data;
-    rgba32_t* src = (rgba32_t*)data;
-    if(imageFlags & NVG_IMAGE_PREMULTIPLIED) {
-      // undo premultiplication
-      for(ii = 0; ii < w*h; ++ii, ++dest, ++src) {
-        int r = COLOR0(*src);
-        int g = COLOR1(*src);
-        int b = COLOR2(*src);
-        int a = COLOR3(*src);
-        *dest = ((255*r)/a << gl->rshift | (255*g)/a << gl->gshift | (255*b)/r << gl->bshift | a << gl->ashift);
-      }
-    }
-    else if(gl->rshift == 0 && gl->gshift == 8 && gl->bshift == 16 && gl->ashift == 24) {
-      memcpy(dest, src, w*h*4);
-    }
-    else {
-      for(ii = 0; ii < w*h; ++ii, ++dest, ++src) {
-        int r = COLOR0(*src);
-        int g = COLOR1(*src);
-        int b = COLOR2(*src);
-        int a = COLOR3(*src);
-        *dest = (r << gl->rshift | g << gl->gshift | b << gl->bshift | a << gl->ashift);
-      }
-    }
+  tex->width = w;  tex->height = h;  tex->flags = imageFlags;  tex->type = type;
+  if(imageFlags & NVG_IMAGE_NOCOPY)  // we'll require user to make sure image byte order matches framebuffer
+    tex->data = (void*)data;
+  else {
+    size_t nbytes = tex->type == NVG_TEXTURE_ALPHA ? w*h : w*h*4;
+    tex->data = malloc(nbytes);
+    if(!data) {}
+    else if(tex->type == NVG_TEXTURE_RGBA)
+      swnvg__copyRGBAData(gl, tex, data);
+    else
+      memcpy(tex->data, data, nbytes);
   }
   return tex->id;
 }
@@ -792,7 +806,8 @@ static int swnvg__renderDeleteTexture(void* uptr, int image)
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
   SWNVGtexture* tex = swnvg__findTexture(gl, image);
   if(!tex) return 0;
-  free(tex->data);
+  if(!(tex->flags & NVG_IMAGE_NOCOPY))
+    free(tex->data);
   memset(tex, 0, sizeof(SWNVGtexture));
   return 1;
 }
@@ -801,7 +816,13 @@ static int swnvg__renderUpdateTexture(void* uptr, int image, int x, int y, int w
 {
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
   SWNVGtexture* tex = swnvg__findTexture(gl, image);
-  memcpy(tex->data, data, tex->width*tex->height*4);
+  if(tex->type == NVG_TEXTURE_RGBA)
+    swnvg__copyRGBAData(gl, tex, data);  // only full update for now
+  else {
+    int nb = tex->type == NVG_TEXTURE_FLOAT ? 4 : 1;
+    int dy = y*tex->width*nb;
+    memcpy((char*)tex->data + dy, (const char*)data + dy, tex->width*h*nb);  // no support for partial width
+  }
   return 1;
 }
 
@@ -815,9 +836,7 @@ static int swnvg__renderGetTextureSize(void* uptr, int image, int* w, int* h)
   return 1;
 }
 
-static void swnvg__renderViewport(void* uptr, float width, float height, float devicePixelRatio)
-{
-}
+static void swnvg__renderViewport(void* uptr, float width, float height, float devicePixelRatio) {}
 
 static void swnvg__renderCancel(void* uptr)
 {

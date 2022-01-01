@@ -37,7 +37,7 @@ enum NVGimageFlagsGLU {
 
 #endif // NANOVG_GL_UTILS_H
 
-#ifdef NANOVG_GL_IMPLEMENTATION
+#ifdef NANOVG_GLU_IMPLEMENTATION
 
 struct NVGLUframebuffer {
   NVGcontext* ctx;
@@ -69,7 +69,7 @@ NVGLUframebuffer* nvgluCreateFramebuffer(NVGcontext* ctx, int w, int h, int imag
   // frame buffer object
   glGenFramebuffers(1, &fb->fbo);
 
-  if (imageFlags | NVGLU_NO_NVG_IMAGE) {
+  if (imageFlags & NVGLU_NO_NVG_IMAGE) {
     fb->image = -1;
     if (w <= 0 || h <= 0)
       return fb;
@@ -77,12 +77,14 @@ NVGLUframebuffer* nvgluCreateFramebuffer(NVGcontext* ctx, int w, int h, int imag
     glBindFramebuffer(GL_FRAMEBUFFER, fb->fbo);
     nvgluSetFramebufferSize(fb, w, h, imageFlags);
   } else {
+#ifdef NANOVG_GL_IMPLEMENTATION
     glBindFramebuffer(GL_FRAMEBUFFER, fb->fbo);
     fb->width = w;
     fb->height = h;
     fb->image = nvgCreateImageRGBA(ctx, w, h, imageFlags | NVG_IMAGE_FLIPY | NVG_IMAGE_PREMULTIPLIED, NULL);
     fb->texture = nvglImageHandle(ctx, fb->image);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb->texture, 0);
+#endif
   }
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
 

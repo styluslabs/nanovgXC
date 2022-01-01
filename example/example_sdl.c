@@ -222,7 +222,7 @@ int SDL_main(int argc, char* argv[])
       if (premult)
         nvgluClear(nvgRGBAf(0, 0, 0, 0));
       else if(nvgFlags & NVG_SRGB)
-        nvgluClear(nvgRGBAf(0.1f, 0.1f, 0.1f, 0.0f));  //nvgluClear(nvgRGBAf(1.0f, 1.0f, 1.0f, 0.0f));
+        nvgluClear(nvgRGBAf(1.0f, 1.0f, 1.0f, 0.0f));  //nvgluClear(nvgRGBAf(0.1f, 0.1f, 0.1f, 0.0f));
       else
         nvgluClear(nvgRGBAf(0.3f, 0.3f, 0.3f, 0.0f));
 #endif
@@ -264,14 +264,16 @@ int SDL_main(int argc, char* argv[])
     //fillRect(vg, 250, 550, 200, 200, nvgRGBA(0,0,255,128));
     //fillRect(vg, 250, 250, 200, 200, nvgRGBA(0,0,255,128));
 
-    if (testNum % 4 == 0)
-      renderDemo(vg, mx,my, fbWidth, fbHeight, t - t0, blowup, &data);
-    else if (testNum % 4 == 1)
-      bigPathsTest(vg, 20, fbWidth, fbHeight);
-    else if (testNum % 4 == 2)
-      smallPathsTest(vg, fbWidth, fbHeight);
-    else
-      svgTest(vg, svgFile, fbWidth, fbHeight);
+    textTest2(vg, testNum);  //textPerformance(vg, testNum, 12);
+
+    ///if (testNum % 4 == 0)
+    ///  renderDemo(vg, mx,my, fbWidth, fbHeight, t - t0, blowup, &data);
+    ///else if (testNum % 4 == 1)
+    ///  bigPathsTest(vg, 20, fbWidth, fbHeight);
+    ///else if (testNum % 4 == 2)
+    ///  smallPathsTest(vg, fbWidth, fbHeight);
+    ///else
+    ///  svgTest(vg, svgFile, fbWidth, fbHeight);
 
     nvgResetTransform(vg);
     nvgTranslate(vg, 0, fbHeight - 50);  // move to bottom away from status bar

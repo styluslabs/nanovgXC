@@ -239,16 +239,15 @@ int fons__tt_buildGlyphBitmap(FONSttFontImpl *font, int glyph, float size, float
   return 1;
 }
 
-void fons__tt_renderGlyphBitmap(FONSttFontImpl *font, unsigned char *output, int outWidth, int outHeight, int outStride,
-                float scaleX, float scaleY, int glyph)
+void fons__tt_renderGlyphBitmap(FONSttFontImpl *font,
+    unsigned char *output, int outWidth, int outHeight, int outStride, float scale, int glyph)
 {
   FT_GlyphSlot ftGlyph = font->font->glyph;
   int ftGlyphOffset = 0;
   int x, y;
   FONS_NOTUSED(outWidth);
   FONS_NOTUSED(outHeight);
-  FONS_NOTUSED(scaleX);
-  FONS_NOTUSED(scaleY);
+  FONS_NOTUSED(scale);
   FONS_NOTUSED(glyph);	// glyph has already been loaded by fons__tt_buildGlyphBitmap
 
   for ( y = 0; y < ftGlyph->bitmap.rows; y++ ) {
@@ -331,13 +330,13 @@ int fons__tt_buildGlyphBitmap(FONSttFontImpl *font, int glyph, float size, float
   return 1;
 }
 
-void fons__tt_renderGlyphBitmap(FONSttFontImpl *font, FONStexel *output, int outWidth, int outHeight, int outStride,
-                float scaleX, float scaleY, int glyph)
+void fons__tt_renderGlyphBitmap(FONSttFontImpl *font,
+    FONStexel *output, int outWidth, int outHeight, int outStride, float scale, int glyph)
 {
 #ifdef FONS_SUMMED
   int x, y;
   unsigned char* bitmap = (unsigned char*)malloc(outWidth*outHeight);
-  stbtt_MakeGlyphBitmap(&font->font, bitmap, outWidth, outHeight, outWidth, scaleX, scaleY, glyph);
+  stbtt_MakeGlyphBitmap(&font->font, bitmap, outWidth, outHeight, outWidth, scale, scale, glyph);
   for(y = 0; y < outHeight; ++y) {
     for(x = 0; x < outWidth; ++x) {
       FONStexel s10 = y > 0 ? output[(y-1)*outStride + x] : 0;
@@ -348,8 +347,19 @@ void fons__tt_renderGlyphBitmap(FONSttFontImpl *font, FONStexel *output, int out
     }
   }
   free(bitmap);
+#elif defined (FONS_SDF)
+  int x, y, w, h;  //x0, y0 -- offset from GetGlyphSDF is just the value from GetGlyphBitmapBox
+  // ..., padding=4, onedge_value=127 (0-255), pixel_dist_scale=32 (1 pix = 32 distance units)
+  unsigned char* bitmap = stbtt_GetGlyphSDF(&font->font, scale, glyph, 4, 127, 32.0, &w, &h, NULL, NULL);
+  if (!bitmap) return;
+  for (y = 0; y < h; ++y) {
+    for (x = 0; x < w; ++x) {
+      output[y*outStride + x] = bitmap[y*w + x];
+    }
+  }
+  stbtt_FreeSDF(bitmap, NULL);  // note that FONScontext.scratch is reset for each glyph
 #else
-  stbtt_MakeGlyphBitmap(&font->font, output, outWidth, outHeight, outStride, scaleX, scaleY, glyph);
+  stbtt_MakeGlyphBitmap(&font->font, output, outWidth, outHeight, outStride, scale, scale, glyph);
 #endif
 }
 
@@ -976,9 +986,9 @@ static FONSglyph* fons__getGlyph(FONScontext* stash, int fontid, unsigned int co
     return glyph;
 
   // Rasterize if not empty glyph; we assume texData for the cell has been cleared to all zeros
-  if(x1 > x0 && y1 > y0) {
+  if (x1 > x0 && y1 > y0) {
     FONStexel* dst = &stash->texData[(glyph->x0+pad) + (glyph->y0+pad) * stash->atlas->width];
-    fons__tt_renderGlyphBitmap(&font->font, dst, cellw - pad, cellh - pad, stash->atlas->width, scale, scale, g);
+    fons__tt_renderGlyphBitmap(&font->font, dst, cellw - pad, cellh - pad, stash->atlas->width, scale, g);
   }
 
   stash->dirtyRect[0] = fons__mini(stash->dirtyRect[0], glyph->x0);
@@ -1335,8 +1345,8 @@ void fonsDeleteInternal(FONScontext* stash)
   if (stash->fonts) free(stash->fonts);
   if (stash->texData) free(stash->texData);
   if (stash->scratch) free(stash->scratch);
-  free(stash);
   fons__tt_done(stash);
+  free(stash);
 }
 
 void fonsSetErrorCallback(FONScontext* stash, void (*callback)(void* uptr, int error, int val), void* uptr)
