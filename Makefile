@@ -2,9 +2,12 @@
 # - generates files in ./Release (default) or ./Debug (with DEBUG=1 passed to make)
 
 TARGET = demo2_sdl
-SOURCES = src/nanovg.c example/perf.c example/demo.c example/example_sdl.c
-INC = src example glad
+SOURCES = src/nanovg.c example/threadpool.cpp example/perf.c example/demo.c example/example_sdl.c
+INC = src example glad ../ulib
 INCSYS = example/stb
+
+# to enable threading for SW renderer (uses std::thread, etc)
+#FORCECPP = example/example_sdl.c
 
 # machine specific or private configuration not committed to git (e.g. iOS signing info)
 -include Makefile.local
@@ -37,7 +40,6 @@ LIBS = \
   version.lib
 
 RESOURCES =
-FORCECPP =
 
 include Makefile.msvc
 
@@ -84,7 +86,8 @@ else
 # Linux
 
 SOURCES += glad/glad.c
-INCSYS += /usr/include/SDL2
+SDL_INC ?= /usr/include/SDL2
+INCSYS += $(SDL_INC)
 SDL_LIB ?= -lSDL2
 LIBS = -lpthread -ldl -lm -lGL $(SDL_LIB)
 PKGS =

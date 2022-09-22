@@ -460,13 +460,17 @@ static void smallPathsTest(NVGcontext* vg, int fbWidth, int fbHeight)
   //fprintf(stderr, "smallPaths setup took %f ms\n", (SDL_GetPerformanceCounter() - t0)/1E6);
 }
 
-static void bigPathsTest(NVGcontext* vg, int npaths, int fbWidth, int fbHeight)
+static void bigPathsTest(NVGcontext* vg, int xpaths, int ypaths, int fbWidth, int fbHeight)
 {
+  int xstep = (fbWidth - 650)/xpaths;
+  int ystep = (fbHeight - 1250)/ypaths;
   nvgFillColor(vg, nvgRGBA(0,0,255,128));
-  for(int ii = 0; ii < npaths; ++ii) {
-    nvgBeginPath(vg);
-    nvgRect(vg, 50 + 3*ii, 50 + 3*ii, 600, 1200);
-    nvgFill(vg);
+  for(int ii = 0; ii < xpaths; ++ii) {
+    for(int jj = 0; jj < ypaths; ++jj) {
+      nvgBeginPath(vg);
+      nvgRect(vg, 50 + xstep*ii, 50 + ystep*jj, 600, 1200);
+      nvgFill(vg);
+    }
   }
 }
 
@@ -490,7 +494,7 @@ static int freadall(const char* filename, char** bufferout)
   return bytesread;
 }
 
-static void textPerformance(NVGcontext* vg, int testNum, float fontsize)
+static void textPerformance(NVGcontext* vg, int testNum, float fontsize, float fontblur)
 {
   int asPaths = testNum % 2;
   //int invert = testNum % 2;
@@ -498,6 +502,7 @@ static void textPerformance(NVGcontext* vg, int testNum, float fontsize)
   nvgAtlasTextThreshold(vg, asPaths ? 0.0f : 48.0f);
   nvgFontFace(vg, "sans");
   nvgFontHeight(vg, fontsize);
+  nvgFontBlur(vg, fontblur);
   nvgFillColor(vg, nvgRGBA(0,0,0,255));
 //  if(testNum % 3 == 0)
 //    nvgFillColor(vg, nvgRGBA(0,0,0,255));    // B on W
@@ -515,7 +520,7 @@ static void textPerformance(NVGcontext* vg, int testNum, float fontsize)
     longstr[(int)c-32] = c;
   longstr[95] = '\0';
 
-  for(int y = 20; y < 1400; y += 20)
+  for(int y = 20; y < 2200; y += fontsize - 4)
     nvgText(vg, 250, y, longstr, NULL);
 }
 
@@ -709,6 +714,34 @@ static void swRenderTest(NVGcontext* vg)
 
 
 /* Benchmarks:
+X1 Yoga Gen 6 - Windows (4K full screen):
+image atomic: 94 / 19 / 120 / 5 (big / small / Opt_page1 / paris-30k)
+ w/ instanced draw: 94 / 19 / 127 / 5
+FB fetch: 109 / 8 / 48 / 3.3
+SW: 12.9 / 6 / 48 / 2.5(?)
+
+Multithreaded SW renderer (half-screen):
+
+image atomic - SW 1x - 2x - 4x - 8x - 16x
+demo 280 - ~20 (varies) - 24 - 30 - 50 - 67
+small paths 40 - 15 - 27 - 30 - 42 - 42
+tiger 60 - 27 - 40 - 68 - 76 - 81
+
+image atomic vs SW 8x:
+paris-30k (half-screen): 7 / 9.4
+Opt_page1 (half-screen): 140 / 105
+
+XC 8 threads, big/small/tiger/Opt_page1/paris-30k: 12/50/50/90/8.5
+- basically, faster for small paths, slower for big paths
+
+multi-threaded SW on iPad: some improvement over single thread (best w/ 2 threads) but still slower than GPU
+1x: 12.5 / 40 / 17 / 12.4 (small / Opt_page1 / text summed / text paths)
+2x: 20.7 / 54 / 30 / 19.4
+4x: 19.5 / 50 / 26 / 13.2
+FB fetch: 23.5 / 60 (sync limit) / 60 / 31
+
+Below from X1 Yoga Gen 2:
+
 May 2020 benchmarks (SW renderer, areaEdge2):
 big = bigPathsTest(), small = smallPathsTest()
 
@@ -720,6 +753,7 @@ iPhone 6S big/small/tiger: 36/33/51; GL_BLEND: 33.7 / 30.6 / 49.2; blend outColo
 
 4x larger image for image atomic: 36 FPS (vs 26 FPS) for big paths test; no change for small paths
 ... significant improvement! paris-30k: 4.2 FPS vs 3.75 (just increase image height in glnvg__renderFlush)
+... but no improvement on Intel Xe!
 
 DEBUG=0 performance tests (half screen in Linux VM):
 - GL: 37 FPS / 9.2 FPS (big / small)

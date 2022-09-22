@@ -640,11 +640,12 @@ enum NVGtexture {
   NVG_TEXTURE_FLOAT = 0x03,
 };
 
+// renderer flags up from 0, nanovg.c flags down from 15; NVG_SRGB used by both
 enum NVGcreateFlags {
   // always draw rotated text as paths (instead of using font atlas)
-  NVG_ROTATED_TEXT_AS_PATHS = 1 << 1,
+  NVG_ROTATED_TEXT_AS_PATHS = 1 << 13,
   // default to NVG_AUTOW instead of NVG_CCW
-  NVG_AUTOW_DEFAULT = 1 << 3,
+  NVG_AUTOW_DEFAULT = 1 << 14,
   // sRGB-aware rendering - perform blending in linear RGB color space
   NVG_SRGB = 1 << 15,  // this is combined w/ NVGpathFlags in nanovg_sw, so must not conflict!
 };
@@ -654,6 +655,7 @@ enum NVGpathFlags {
   NVG_PATH_EVENODD = 1 << 0,
   NVG_PATH_NO_AA = 1 << 1,
   NVG_PATH_CONVEX = 1 << 2,
+  NVG_PATH_XC = 1 << 3,  // request exact coverage rendering for renderers w/ alternative options
 };
 
 struct NVGscissor {

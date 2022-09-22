@@ -1296,8 +1296,8 @@ static void glnvg__imgAtomicFlush(GLNVGcontext* gl)
         glnvg__checkError(gl, "fill: accumulate winding");
       }
     }
-
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    // GL_FRAMEBUFFER_BARRIER_BIT needed for Intel Xe graphics for some reason
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
     gl->imgWindingOffset = 0;
     for (; fillidx < accumidx; ++fillidx) {
       GLNVGcall* call = &gl->calls[fillidx];
@@ -1318,7 +1318,7 @@ static void glnvg__imgAtomicFlush(GLNVGcontext* gl)
     }
     // have to wait for imgWinding to be cleared before we can start writing again
     if (fillidx < gl->ncalls)
-      glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+      glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
   }
 }
 #endif

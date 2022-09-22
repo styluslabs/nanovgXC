@@ -70,23 +70,26 @@ BUILDDIRS=$(sort $(dir $(OBJ)))
 # on Windows, existence check doesn't work for directories (?), so use an empty file in each directory instead
 BUILDDIRSMADE=$(BUILDDIRS:%=%.made)
 
+FCPPBASE=$(basename $(FORCECPP))
+FCPPOBJ=$(FCPPBASE:%=$(OBJDIR)/%.obj)
+
 .PHONY: all clean distclean
 
 all: $(TGT)
 
 # force C/C++
-$(OBJDIR)/$(FORCECPP): CFLAGS += /TP
+$(FCPPOBJ): CFLAGS += /TP $(CXXFLAGS)
 
 # echo | set /p x="..." is trick to suppress newline; also used for each dependency added to file because I was
 #  unable to get rid of trailing whitespace otherwise (code that didn't add trailing whitespace when run from
 #  batch file did add one when pasted here!).
 $(OBJDIR)/%.obj: %.cpp
-	echo|set /p x="$@: " > $(basename $@).d
-	($(CXX) /c $< /Fo:$@ /showIncludes $(CFLAGS) $(CXXFLAGS) $(INCFLAGS) || echo XXXDIE) | @FOR /F "tokens=1,2,3,*" %%A IN ('$(DEPENDFILT)') DO @IF "%%A"=="Note:" (echo|set /p x="%%D ">>$(basename $@).d) ELSE (@IF "%%A"=="XXXDIE" (exit 2) ELSE echo %%A %%B %%C %%D)
+	@echo|set /p x="$@: " > $(basename $@).d
+	@($(CXX) /c $< /Fo:$@ /showIncludes $(CFLAGS) $(CXXFLAGS) $(INCFLAGS) || echo XXXDIE) | @FOR /F "tokens=1,2,3,*" %%A IN ('$(DEPENDFILT)') DO @IF "%%A"=="Note:" (echo|set /p x="%%D ">>$(basename $@).d) ELSE (@IF "%%A"=="XXXDIE" (exit 2) ELSE echo %%A %%B %%C %%D)
 
 $(OBJDIR)/%.obj: %.c
-	echo|set /p x="$@: " > $(basename $@).d
-	($(CC) /c $< /Fo:$@ /showIncludes $(CFLAGS) $(CCFLAGS) $(INCFLAGS) || echo XXXDIE) | @FOR /F "tokens=1,2,3,*" %%A IN ('$(DEPENDFILT)') DO @IF "%%A"=="Note:" (echo|set /p x="%%D ">>$(basename $@).d) ELSE (@IF "%%A"=="XXXDIE" (exit 2) ELSE echo %%A %%B %%C %%D)
+	@echo|set /p x="$@: " > $(basename $@).d
+	@($(CC) /c $< /Fo:$@ /showIncludes $(CFLAGS) $(CCFLAGS) $(INCFLAGS) || echo XXXDIE) | @FOR /F "tokens=1,2,3,*" %%A IN ('$(DEPENDFILT)') DO @IF "%%A"=="Note:" (echo|set /p x="%%D ">>$(basename $@).d) ELSE (@IF "%%A"=="XXXDIE" (exit 2) ELSE echo %%A %%B %%C %%D)
 
 $(OBJDIR)/%.res: %.rc
 	$(RC) $(RCFLAGS) /fo $@ $<

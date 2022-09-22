@@ -16,18 +16,18 @@ Two rendering backends are available:
     * GL_EXT_shader_framebuffer_fetch - iOS (also works on many desktop GPUs but with poor performance)
     * GL_ARB_shader_image_load_store/GL_OES_shader_image_atomic - Android (ES 3.1+) and Windows/Linux (GL 4 level hardware)
     * no extensions - switches between two framebuffers for each path (one for accumulating winding, one for final output).  Not as slow as it sounds on desktop GPUs - faster than software renderer for large paths.
-2. software renderer backend based on [nanosvg](https://github.com/memononen/nanosvg) and [stb_truetype](https://github.com/nothings/stb) (does not use "exact coverage" technique currently - see below)
+2. software renderer backend based on [nanosvg](https://github.com/memononen/nanosvg) and [stb_truetype](https://github.com/nothings/stb), supporting both "exact coverage" and sub-scanline rendering (see below).  Supports multi-threaded rendering, with each thread rendering a separate region of the output.  This significantly improves performance on desktop platforms, less so on mobile.
 
 Text is rendered by calculating a "summed" font atlas where each pixel stores the total coverage in the rectangle defined by that pixel and the origin (0,0).  When rendering, the texture coordinates for the corners of the current pixel are calculated and the corresponding values (s00, s01, s10, s11) from the summed font atlas are read with bilinear interpolation.  The pixel's coverage is then just s11 - s01 - s10 + s00.  Text at font sizes above a threshold set by `nvgAtlasTextThreshold()` is rendered directly as paths.  Text at all sizes below the threshold is rendered from the single atlas.
 
-The original intent of this approach was to support continuous scaling of text without rebuilding a font atlas every frame and to allow arbitrary subpixel positioning of glyphs, but it could well be slower than just rebuilding the font atlas (and it is for the current software renderer implementation).  It works well enough for the author's purposes but probably should be reconsidered.
+The original intent of this approach was to support continuous scaling of text without rebuilding a font atlas every frame and to allow arbitrary subpixel positioning of glyphs, but it could well be slower than just rebuilding the font atlas (and it is for the current software renderer implementation).  Signed distance field text rendering (w/ 4 samples per pixel) is also supported and provides similar quality along with support for adjusting text weight.
 
 
 ### "Exact Coverage" ###
 
 The exact coverage antialiasing technique calculates the intersection area of the path and each pixel (represented as a square) to greater than 1/256 accuracy, hence the word "exact".  An early reference to this terminology can be found in [libart](https://people.gnome.org/~mathieu/libart/internals.html).
 
-This technique overestimates the coverage of partially-covered pixels for self-intersecting (i.e. self-overlapping) paths, resulting in incorrect antialiasing for these pixels.  This problem is not unique to GPU implementations of the technique, although with a CPU implementation it is easier to select a different approach for such paths.  The software renderer backend uses another common approach - splitting each scanline into a small number of horizontal "sub-scanlines" and fully including or excluding each path segment from each sub-scanline (while retaining high precision in the horizontal direction).  This can have reduced accuracy, especially for horizontal edges, but does not suffer from the coverage overestimation issue.
+This technique overestimates the coverage of partially-covered pixels for self-intersecting (i.e. self-overlapping) paths, resulting in incorrect antialiasing for these pixels.  This problem is not unique to GPU implementations of the technique, although with a CPU implementation it is easier to select a different approach for such paths.  The software renderer backend supports another common approach - splitting each scanline into a small number of horizontal "sub-scanlines" and fully including or excluding each path segment from each sub-scanline (while retaining high precision in the horizontal direction).  This can have reduced accuracy, especially for horizontal edges, but does not suffer from the coverage overestimation issue.
 
 
 ### sRGB ###

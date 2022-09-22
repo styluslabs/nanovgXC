@@ -10,7 +10,7 @@
 
 #include "nanovg.h"
 #define FONTSTASH_IMPLEMENTATION
-#define FONS_SUMMED  //FONS_SDF
+#define FONS_SUMMED  //FONS_SDF  //
 #include "fontstash.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -274,7 +274,7 @@ NVGcontext* nvgCreateInternal(NVGparams* params)
   memset(&fontParams, 0, sizeof(fontParams));
   //fontParams.width = NVG_INIT_FONTIMAGE_SIZE;
   //fontParams.height = NVG_INIT_FONTIMAGE_SIZE;
-  fontParams.flags = FONS_ZERO_TOPLEFT;
+  fontParams.flags = FONS_ZERO_TOPLEFT | FONS_DELAY_LOAD;
   fontParams.renderCreate = NULL;
   fontParams.renderUpdate = NULL;
   fontParams.renderDraw = NULL;
@@ -2003,7 +2003,7 @@ void nvgStroke(NVGcontext* ctx)
   NVGpaint strokePaint = state->stroke;
   NVGpath* paths0 = NULL;
   int i, npaths0, npoints0;
-  int flags = (state->shapeAntiAlias ? 0 : 2);  // stroke fill always uses non-zero fill rule
+  int flags = (state->shapeAntiAlias ? 0 : NVG_PATH_NO_AA);  // stroke fill always uses non-zero fill rule
 
   // we'll take stroke-width == 0 to indicate a non-scaling stroke
   if(strokeWidth == 0.0f) strokeWidth = 1.0f;
@@ -2061,7 +2061,7 @@ int nvgFindFont(NVGcontext* ctx, const char* name)
 
 int nvgAddFallbackFontId(NVGcontext* ctx, int baseFont, int fallbackFont)
 {
-  if(baseFont == -1 || fallbackFont == -1) return 0;
+  if(fallbackFont == -1) return 0;
   return fonsAddFallbackFont(ctx->fs, baseFont, fallbackFont);
 }
 
@@ -2221,6 +2221,7 @@ static void nvg__renderText(NVGcontext* ctx, NVGvertex* verts, int nverts)
   paint.outerColor.a *= state->alpha;
   // feather is used a flag to enable gamma adjust for text
   //paint.feather = ctx->sRGBTextAdj ? 1 : 0;
+  paint.radius = state->fontBlur;
   ctx->params.renderTriangles(ctx->params.userPtr, &paint, state->compositeOperation, &state->scissor, verts, nverts);
   ctx->drawCallCount++;
   ctx->textTriCount += nverts/3;

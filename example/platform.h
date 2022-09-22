@@ -28,7 +28,7 @@
 //#include <GLFW/glfw3.h>
 #include "glad.h"
 
-#define DATA_PATH(x) ("../example/" x)
+#define DATA_PATH(x) ("example/" x)
 #endif
 
 //#ifdef _MSC_VER

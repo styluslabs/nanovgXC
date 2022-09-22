@@ -12,10 +12,20 @@
 extern "C" {
 #endif
 
+enum NVGSWcreateFlags {
+  NVGSW_PATHS_XC = 1<<3  // use exact coverage algorithm for path rendering
+};
+
+
 // Create a NanoVG context; flags should be combination of the create flags above.
 NVGcontext* nvgswCreate(int flags);
 void nvgswDelete(NVGcontext* ctx);
 void nvgswSetFramebuffer(NVGcontext* vg, void* dest, int w, int h, int rshift, int gshift, int bshift, int ashift);
+
+typedef void (*taskFn_t)(void*);
+typedef void (*poolSubmit_t)(taskFn_t, void*);
+typedef void (*poolWait_t)(void);
+void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads, poolSubmit_t submit, poolWait_t wait);
 
 #ifdef __cplusplus
 }
@@ -105,11 +115,24 @@ typedef struct SWNVGmemPage {
   struct SWNVGmemPage* next;
 } SWNVGmemPage;
 
+struct SWNVGcontext;
+typedef struct SWNVGthreadCtx {
+  struct SWNVGcontext* context;
+  int threadnum;
+  int x0, y0, x1, y1;
+
+  SWNVGactiveEdge* freelist;
+  SWNVGmemPage* pages;
+  SWNVGmemPage* curpage;
+
+  unsigned char* scanline;
+  int cscanline;
+} SWNVGthreadCtx;
+
 struct SWNVGcontext {
   unsigned char* bitmap;
   int width, height, stride;
   int rshift, gshift, bshift, ashift;
-  //float view[2];
   SWNVGtexture* textures;
   int ntextures;
   int ctextures;
@@ -130,12 +153,12 @@ struct SWNVGcontext {
   int nedges;
   int cedges;
 
-  SWNVGactiveEdge* freelist;
-  SWNVGmemPage* pages;
-  SWNVGmemPage* curpage;
-
-  unsigned char* scanline;
-  int cscanline;
+  poolSubmit_t poolSubmit;
+  poolWait_t poolWait;
+  SWNVGthreadCtx* threads;
+  int xthreads;
+  int ythreads;
+  float* covtex;
 };
 typedef struct SWNVGcontext SWNVGcontext;
 
@@ -153,7 +176,7 @@ static void swnvg__sRGBLUTCalc()
     linearToSRGB[i] = (unsigned char)(0.5f + powf(i/((float)LINEAR_TO_SRGB_DIV), 1/sRGBgamma)*255);
 }
 
-static SWNVGmemPage* swnvg__nextPage(SWNVGcontext* r, SWNVGmemPage* cur)
+static SWNVGmemPage* swnvg__nextPage(SWNVGthreadCtx* r, SWNVGmemPage* cur)
 {
   SWNVGmemPage *newp;
   // If using existing chain, return the next page in chain
@@ -170,7 +193,7 @@ static SWNVGmemPage* swnvg__nextPage(SWNVGcontext* r, SWNVGmemPage* cur)
   return newp;
 }
 
-static void swnvg__resetPool(SWNVGcontext* r)
+static void swnvg__resetPool(SWNVGthreadCtx* r)
 {
   SWNVGmemPage* p = r->pages;
   while (p != NULL) {
@@ -180,7 +203,7 @@ static void swnvg__resetPool(SWNVGcontext* r)
   r->curpage = r->pages;
 }
 
-static unsigned char* swnvg__alloc(SWNVGcontext* r, int size)
+static unsigned char* swnvg__alloc(SWNVGthreadCtx* r, int size)
 {
   unsigned char* buf;
   if (size > SWNVG__MEMPAGE_SIZE) return NULL;
@@ -219,7 +242,7 @@ static void swnvg__addEdge(SWNVGcontext* r, NVGvertex* vtx)
   }
 }
 
-static SWNVGactiveEdge* swnvg__addActive(SWNVGcontext* r, SWNVGedge* e, float startPoint)
+static SWNVGactiveEdge* swnvg__addActive(SWNVGthreadCtx* r, SWNVGedge* e, float startPoint)
 {
    SWNVGactiveEdge* z;
 
@@ -249,102 +272,83 @@ static SWNVGactiveEdge* swnvg__addActive(SWNVGcontext* r, SWNVGedge* e, float st
   return z;
 }
 
-static void swnvg__freeActive(SWNVGcontext* r, SWNVGactiveEdge* z)
+static void swnvg__freeActive(SWNVGthreadCtx* r, SWNVGactiveEdge* z)
 {
   z->next = r->freelist;
   r->freelist = z;
 }
 
-static void swnvg__fillScanlineAA(unsigned char* scanline, int len, int x0, int x1, int* xmin, int* xmax)
+static void swnvg__fillScanlineAA(unsigned char* scanline, int len, int x0, int x1, int i, int j)
 {
   int maxWeight = (255 / SWNVG__SUBSAMPLES);  // weight per vertical scanline
-  int i = x0 >> SWNVG__FIXSHIFT;
-  int j = x1 >> SWNVG__FIXSHIFT;
-  if (i < len && j >= 0) {
-    if (i < *xmin) *xmin = i;
-    if (j > *xmax) *xmax = j;
-    if (i == j) {
-      // x0,x1 are the same pixel, so compute combined coverage
-      scanline[i] = (unsigned char)(scanline[i] + ((x1 - x0) * maxWeight >> SWNVG__FIXSHIFT));
-    } else {
-      if (i >= 0) // add antialiasing for x0
-        scanline[i] = (unsigned char)(scanline[i] + (((SWNVG__FIX - (x0 & SWNVG__FIXMASK)) * maxWeight) >> SWNVG__FIXSHIFT));
-      else
-        i = -1; // clip
+  if (i == j) {
+    // x0,x1 are the same pixel, so compute combined coverage
+    scanline[i] = (unsigned char)(scanline[i] + ((x1 - x0) * maxWeight >> SWNVG__FIXSHIFT));
+  } else {
+    if (i >= 0) // add antialiasing for x0
+      scanline[i] = (unsigned char)(scanline[i] + (((SWNVG__FIX - (x0 & SWNVG__FIXMASK)) * maxWeight) >> SWNVG__FIXSHIFT));
+    else
+      i = -1; // clip
 
-      if (j < len) // add antialiasing for x1
-        scanline[j] = (unsigned char)(scanline[j] + (((x1 & SWNVG__FIXMASK) * maxWeight) >> SWNVG__FIXSHIFT));
-      else
-        j = len; // clip
+    if (j < len) // add antialiasing for x1
+      scanline[j] = (unsigned char)(scanline[j] + (((x1 & SWNVG__FIXMASK) * maxWeight) >> SWNVG__FIXSHIFT));
+    else
+      j = len; // clip
 
-      for (++i; i < j; ++i) // fill pixels between x0 and x1
-        scanline[i] = (unsigned char)(scanline[i] + maxWeight);
-    }
+    for (++i; i < j; ++i) // fill pixels between x0 and x1
+      scanline[i] = (unsigned char)(scanline[i] + maxWeight);
   }
 }
 
 // non-AA - assumes only one (sub)sample per actual scanline
-static void swnvg__fillScanline(unsigned char* scanline, int len, int x0, int x1, int* xmin, int* xmax)
+static void swnvg__fillScanline(unsigned char* scanline, int len, int x0, int x1, int i, int j)
 {
   unsigned char maxWeight = 255;
-  int i = x0 >> SWNVG__FIXSHIFT;
-  int j = x1 >> SWNVG__FIXSHIFT;
-  if (i < len && j >= 0) {
-    if (i < *xmin) *xmin = i;
-    if (j > *xmax) *xmax = j;
-    if (i == j) {
-      // x0,x1 are the same pixel - determine if they span the center
-      scanline[i] = (x0 & SWNVG__FIXMASK) <= SWNVG__FIX/2 && (x1 & SWNVG__FIXMASK) > SWNVG__FIX/2 ? maxWeight : 0;
-    } else {
-      if (i >= 0)
-        scanline[i] = (x0 & SWNVG__FIXMASK) <= SWNVG__FIX/2 ? maxWeight : 0;
-      else
-        i = -1; // clip
+  if (i == j) {
+    // x0,x1 are the same pixel - determine if they span the center
+    scanline[i] = (x0 & SWNVG__FIXMASK) <= SWNVG__FIX/2 && (x1 & SWNVG__FIXMASK) > SWNVG__FIX/2 ? maxWeight : 0;
+  } else {
+    if (i >= 0)
+      scanline[i] = (x0 & SWNVG__FIXMASK) <= SWNVG__FIX/2 ? maxWeight : 0;
+    else
+      i = -1; // clip
 
-      if (j < len)
-        scanline[j] = (x1 & SWNVG__FIXMASK) > SWNVG__FIX/2 ? maxWeight : 0;
-      else
-        j = len; // clip
+    if (j < len)
+      scanline[j] = (x1 & SWNVG__FIXMASK) > SWNVG__FIX/2 ? maxWeight : 0;
+    else
+      j = len; // clip
 
-      for (++i; i < j; ++i) // fill pixels between x0 and x1
-        scanline[i] = maxWeight;
-    }
+    for (++i; i < j; ++i) // fill pixels between x0 and x1
+      scanline[i] = maxWeight;
   }
 }
 
-static void swnvg__fillActiveEdges(unsigned char* scanline, int len, SWNVGactiveEdge* e, int* xmin, int* xmax, int flags)
+static void swnvg__fillActiveEdges(SWNVGthreadCtx* r, SWNVGactiveEdge* e, int* xmin, int* xmax, int flags)
 {
-  int x0 = 0, w = 0;
-
-  if (flags & NVG_PATH_EVENODD) {
-    // Even-odd fill rule
-    while (e != NULL) {
+  int x0 = 0, w = 0, left = r->x0, right = r->x1;
+  unsigned char* scanline = r->scanline;
+  int len = right - left + 1;
+  while (e != NULL) {
+    if (w == 0) {
+      // if we're currently at zero, we need to record the edge start point
+      x0 = e->x;
+      w = (flags & NVG_PATH_EVENODD) ? 1 : w + e->dir;
+    } else {
+      int x1 = e->x;
+      w = (flags & NVG_PATH_EVENODD) ? 0 : w + e->dir;
+      // if we went to zero, we need to draw
       if (w == 0) {
-        // if we're currently at zero, we need to record the edge start point
-        x0 = e->x; w = 1;
-      } else {
-        int x1 = e->x; w = 0;
-        (flags & NVG_PATH_NO_AA) ? swnvg__fillScanline(scanline, len, x0, x1, xmin, xmax)
-            : swnvg__fillScanlineAA(scanline, len, x0, x1, xmin, xmax);
-      }
-      e = e->next;
-    }
-  } else {
-    // Non-zero fill rule
-    while (e != NULL) {
-      if (w == 0) {
-        // if we're currently at zero, we need to record the edge start point
-        x0 = e->x; w += e->dir;
-      } else {
-        int x1 = e->x; w += e->dir;
-        // if we went to zero, we need to draw
-        if (w == 0) {
-          (flags & NVG_PATH_NO_AA) ? swnvg__fillScanline(scanline, len, x0, x1, xmin, xmax)
-              : swnvg__fillScanlineAA(scanline, len, x0, x1, xmin, xmax);
+        int i = x0 >> SWNVG__FIXSHIFT;
+        int j = x1 >> SWNVG__FIXSHIFT;
+        if (i <= right && j >= left) {
+          if (i < *xmin) *xmin = i;
+          if (j > *xmax) *xmax = j;
+          (flags & NVG_PATH_NO_AA) ? swnvg__fillScanline(scanline, len, x0, x1, i - left, j - left)
+              : swnvg__fillScanlineAA(scanline, len, x0, x1, i - left, j - left);
         }
       }
-      e = e->next;
     }
+    e = e->next;
   }
 }
 
@@ -393,7 +397,7 @@ static void swnvg__blendLinear(unsigned char* dst, int cover, int cr, int cg, in
   unsigned int s2 = sRGBToLinear[cb];
   int srca = (cover * ca)/255;
   int ia = 255 - srca;
-  // src over blend - src RGB is already premultiplied by A, by only mul by cover
+  // src over blend - src RGB is already premultiplied by A, so only mul by cover
   int r = (srca*s0 + ia*d0)/255;
   int g = (srca*s1 + ia*d1)/255;
   int b = (srca*s2 + ia*d2)/255;
@@ -537,16 +541,17 @@ static void swnvg__scanlineSolid(unsigned char* dst, int count, unsigned char* c
   }
 }
 
-static void swnvg__rasterizeSortedEdges(SWNVGcontext *r, SWNVGcall* call)
+static void swnvg__rasterizeSortedEdges(SWNVGthreadCtx* r, SWNVGcall* call)
 {
+  SWNVGcontext* gl = r->context;
   SWNVGactiveEdge *active = NULL;
   int y, s;
   int e = call->edgeOffset;
   int eend = call->edgeOffset + call->edgeCount;
   int xmin, xmax, xmin1, xmax1;
 
-  for (y = call->bounds[1]; y <= call->bounds[3]; y++) {
-    xmin = r->width;
+  for (y = swnvg__maxi(r->y0, call->bounds[1]); y <= swnvg__mini(r->y1, call->bounds[3]); y++) {
+    xmin = gl->width;
     xmax = 0;
     for (s = 0; s < SWNVG__SUBSAMPLES; ++s) {
       // we only process one subsample scanline for non-AA
@@ -585,9 +590,9 @@ static void swnvg__rasterizeSortedEdges(SWNVGcontext *r, SWNVGcall* call)
         if (!changed) break;
       }
       // insert all edges that start before the center of this scanline -- omit ones that also end on this scanline
-      while (e < eend && r->edges[e].y0 <= scany) {
-        if (r->edges[e].y1 > scany) {
-          SWNVGactiveEdge* z = swnvg__addActive(r, &r->edges[e], scany);
+      while (e < eend && gl->edges[e].y0 <= scany) {
+        if (gl->edges[e].y1 > scany) {
+          SWNVGactiveEdge* z = swnvg__addActive(r, &gl->edges[e], scany);
           if (z == NULL) break;
           if (call->flags & NVG_PATH_NO_AA)
             z->dx *= SWNVG__SUBSAMPLES;  // AA case uses per-subscanline step
@@ -612,36 +617,36 @@ static void swnvg__rasterizeSortedEdges(SWNVGcontext *r, SWNVGcall* call)
       }
       // now process all active edges in non-zero fashion
       if (active != NULL)
-        swnvg__fillActiveEdges(r->scanline, r->width, active, &xmin, &xmax, call->flags);
+        swnvg__fillActiveEdges(r, active, &xmin, &xmax, call->flags);
     }
     // clip xmin, xmax for memset
-    xmin = swnvg__maxi(xmin, 0);
-    xmax = swnvg__mini(xmax, r->width-1);
+    xmin = swnvg__maxi(xmin, r->x0);
+    xmax = swnvg__mini(xmax, r->x1);
     // further clip for possible scissor
     xmin1 = swnvg__maxi(xmin, call->bounds[0]);
     xmax1 = swnvg__mini(xmax, call->bounds[2]);
     if (xmin1 <= xmax1)
-      swnvg__scanlineSolid(&r->bitmap[y * r->stride] + xmin1*4, xmax1-xmin1+1, &r->scanline[xmin1], xmin1, y, call);
+      swnvg__scanlineSolid(&gl->bitmap[y*gl->stride + xmin1*4], xmax1-xmin1+1, &r->scanline[xmin1 - r->x0], xmin1, y, call);
     // we fill x range clipped to scissor, but we have to clear entire range written by fillActiveEdges
     if (xmin <= xmax)
-      memset(&r->scanline[xmin], 0, xmax-xmin+1);
+      memset(&r->scanline[xmin - r->x0], 0, xmax-xmin+1);
   }
 }
 
-static float texelFetchF32(SWNVGtexture* tex, int x, int y)
+static float texFetchF32(SWNVGtexture* tex, int x, int y)
 {
   float* data = (float*)tex->data;
   return data[x + y*tex->width];
 }
 
-static float texFetchLerp(SWNVGtexture* tex, float ijx, float ijy, int ijminx, int ijminy, int ijmaxx, int ijmaxy)
+static float texFetchF32Lerp(SWNVGtexture* tex, float ijx, float ijy, int ijminx, int ijminy, int ijmaxx, int ijmaxy)
 {
   int ij00x = swnvg__clampi((int)ijx, ijminx, ijmaxx), ij00y = swnvg__clampi((int)ijy, ijminy, ijmaxy);
   int ij11x = swnvg__clampi((int)ijx + 1, ijminx, ijmaxx), ij11y = swnvg__clampi((int)ijy + 1, ijminy, ijmaxy);
-  float t00 = texelFetchF32(tex, ij00x, ij00y);
-  float t10 = texelFetchF32(tex, ij11x, ij00y);
-  float t01 = texelFetchF32(tex, ij00x, ij11y);
-  float t11 = texelFetchF32(tex, ij11x, ij11y);
+  float t00 = texFetchF32(tex, ij00x, ij00y);
+  float t10 = texFetchF32(tex, ij11x, ij00y);
+  float t01 = texFetchF32(tex, ij00x, ij11y);
+  float t11 = texFetchF32(tex, ij11x, ij11y);
   float fx = ijx - (int)ijx, fy = ijy - (int)ijy;
   //return mix(mix(t00, t10, f.x), mix(t01, t11, f.x), f.y);
   float t0 = t00 + fx*(t10 - t00);
@@ -655,22 +660,71 @@ static float summedTextCov(SWNVGtexture* tex, float ijx, float ijy, float dx, fl
 {
   // for some reason, we need to shift by an extra (-0.5, -0.5) for summed case (here or in fons__getQuad)
   //ijx -= 0.499999f;  ijy -= 0.499999f;
-  float s11 = texFetchLerp(tex, ijx + dx, ijy + dy, ijminx, ijminy, ijmaxx, ijmaxy);
-  float s01 = texFetchLerp(tex, ijx - dx, ijy + dy, ijminx, ijminy, ijmaxx, ijmaxy);
-  float s10 = texFetchLerp(tex, ijx + dx, ijy - dy, ijminx, ijminy, ijmaxx, ijmaxy);
-  float s00 = texFetchLerp(tex, ijx - dx, ijy - dy, ijminx, ijminy, ijmaxx, ijmaxy);
+  float s11 = texFetchF32Lerp(tex, ijx + dx, ijy + dy, ijminx, ijminy, ijmaxx, ijmaxy);
+  float s01 = texFetchF32Lerp(tex, ijx - dx, ijy + dy, ijminx, ijminy, ijmaxx, ijmaxy);
+  float s10 = texFetchF32Lerp(tex, ijx + dx, ijy - dy, ijminx, ijminy, ijmaxx, ijmaxy);
+  float s00 = texFetchF32Lerp(tex, ijx - dx, ijy - dy, ijminx, ijminy, ijmaxx, ijmaxy);
   float cov = (s11 - s01 - s10 + s00)/(255.0f*4.0f*dx*dy);
   return swnvg__clampf(cov, 0.0f, 1.0f);
 }
 
-// note this doesn't support rotated text (so nvgswCreate() sets NVG_ROTATED_TEXT_AS_PATHS flag)
-static void swnvg__rasterizeQuad(SWNVGcontext* rast, SWNVGcall* call, SWNVGtexture* tex, NVGvertex* v00, NVGvertex* v11)
+static unsigned char texFetch(SWNVGtexture* tex, int x, int y)
 {
+  unsigned char* data = (unsigned char*)tex->data;
+  return data[x + y*tex->width];
+}
+
+static float texFetchLerp(SWNVGtexture* tex, float ijx, float ijy, int ijminx, int ijminy, int ijmaxx, int ijmaxy)
+{
+  int ij00x = swnvg__clampi((int)ijx, ijminx, ijmaxx), ij00y = swnvg__clampi((int)ijy, ijminy, ijmaxy);
+  int ij11x = swnvg__clampi((int)ijx + 1, ijminx, ijmaxx), ij11y = swnvg__clampi((int)ijy + 1, ijminy, ijmaxy);
+  float t00 = texFetch(tex, ij00x, ij00y);
+  float t10 = texFetch(tex, ij11x, ij00y);
+  float t01 = texFetch(tex, ij00x, ij11y);
+  float t11 = texFetch(tex, ij11x, ij11y);
+  float fx = ijx - (int)ijx, fy = ijy - (int)ijy;
+  float t0 = t00 + fx*(t10 - t00);
+  float t1 = t01 + fx*(t11 - t01);
+  return t0 + fy*(t1 - t0);
+}
+
+// Super-sampled SDF text - nvgFontBlur can be used to make thicker or thinner
+static float sdfCov(float D, float sdfscale, float sdfoffset)
+{
+  return D > 0.0f ? swnvg__clampf((D - 255.0f*0.5f)/sdfscale + sdfoffset, 0.0f, 1.0f) : 0.0f;
+}
+
+static float superSDF(SWNVGtexture* tex, float s, float dr, float ijx, float ijy, float dx, float dy, int ijminx, int ijminy, int ijmaxx, int ijmaxy)
+{
+  // check distance from center of nearest pixel and exit early if large enough
+  // doesn't help at all for very small font sizes, but >50% for larger sizes
+  float d = texFetch(tex, (int)(ijx + 0.5f), (int)(ijy + 0.5f));
+  float sd = (d - 255.0f*0.5f)/s + (dr - 0.5f);  // note we're still using the half pixel scale here
+  if(sd < -1.415f) return 0;  // sqrt(2) ... verified experimentally
+  if(sd > 1.415f) return 1.0f;
+
+  //return sdfCov(texFetchLerp(tex, ijx, ijy, ijminx, ijminy, ijmaxx, ijmaxy), 2*s);
+  float d11 = texFetchLerp(tex, ijx + dx, ijy + dy, ijminx, ijminy, ijmaxx, ijmaxy);
+  float d10 = texFetchLerp(tex, ijx - dx, ijy + dy, ijminx, ijminy, ijmaxx, ijmaxy);
+  float d01 = texFetchLerp(tex, ijx + dx, ijy - dy, ijminx, ijminy, ijmaxx, ijmaxy);
+  float d00 = texFetchLerp(tex, ijx - dx, ijy - dy, ijminx, ijminy, ijmaxx, ijmaxy);
+  return 0.25f*(sdfCov(d11, s, dr) + sdfCov(d10, s, dr) + sdfCov(d01, s, dr) + sdfCov(d00, s, dr));
+}
+
+static void swnvg__rasterizeQuad(SWNVGthreadCtx* r, SWNVGcall* call, SWNVGtexture* tex, NVGvertex* v00, NVGvertex* v11)
+{
+  SWNVGcontext* gl = r->context;
   int x, y;
   float s00 = tex->width * v00->x1;
   float t00 = tex->height * v00->y1;
   float ds = call->paintMat[0]/2;
   float dt = call->paintMat[3]/2;
+#ifdef FONS_SDF
+  float sdfoffset = call->radius + 0.5f;
+  float sdfscale = 0.5f * 32.0f*call->paintMat[0];  // 0.5 - we're sampling 4 0.5x0.5 subpixels
+  s00 += 4 + ds;  // account for 4 pixel padding in SDF
+  t00 += 4 + dt;
+#endif
 
   int linear = call->flags & NVG_SRGB;
   int cr = COLOR0(call->innerCol);
@@ -682,19 +736,24 @@ static void swnvg__rasterizeQuad(SWNVGcontext* rast, SWNVGcall* call, SWNVGtextu
   // use texcoord center to figure out which atlas rect we are reading from
   int ijminx = ((int)(s00/extentx + 0.5f))*extentx, ijminy = ((int)(t00/extenty + 0.5f))*extenty;
   int ijmaxx = ijminx + extentx - 1, ijmaxy = ijminy + extenty - 1;
+  if(ijminx < 0 || ijminy < 0) return;  // something went wrong
 
-  int xmin = swnvg__maxi(call->bounds[0], (int)v00->x0);
-  int ymin = swnvg__maxi(call->bounds[1], (int)v00->y0);
-  int xmax = swnvg__mini(call->bounds[2], (int)(ceilf(v11->x0)));
-  int ymax = swnvg__mini(call->bounds[3], (int)(ceilf(v11->y0)));
+  int xmin = swnvg__maxi(swnvg__maxi(call->bounds[0], r->x0), (int)v00->x0);
+  int ymin = swnvg__maxi(swnvg__maxi(call->bounds[1], r->y0), (int)v00->y0);
+  int xmax = swnvg__mini(swnvg__mini(call->bounds[2], r->x1), (int)(ceilf(v11->x0)));
+  int ymax = swnvg__mini(swnvg__mini(call->bounds[3], r->y1), (int)(ceilf(v11->y0)));
   if(ymin > ymax || xmin > xmax) return;
   float s0 = s00 - 2*ds*(v00->x0 - xmin);
   float t = t00 - 2*dt*(v00->y0 - ymin);
   for(y = ymin; y <= ymax; ++y) {
-    unsigned char* dst = &rast->bitmap[y*rast->stride + xmin*4];
+    unsigned char* dst = &gl->bitmap[y*gl->stride + xmin*4];
     float s = s0;
     for(x = xmin; x <= xmax; ++x) {
+#ifdef FONS_SDF
+      float cover = superSDF(tex, sdfscale, sdfoffset, s, t, ds/2, dt/2, ijminx, ijminy, ijmaxx, ijmaxy);
+#else
       float cover = summedTextCov(tex, s, t, ds, dt, ijminx, ijminy, ijmaxx, ijmaxy);
+#endif
       swnvg__blend8888(dst, (int)(255.0f*cover + 0.5f), cr, cg, cb, ca, linear);
       s += 2*ds;
       dst += 4;
@@ -846,6 +905,131 @@ static void swnvg__renderCancel(void* uptr)
   gl->ncalls = 0;
 }
 
+// exact coverage rasterization based on GPU renderer
+
+static void swnvg__addEdgeXC(SWNVGcontext* r, NVGvertex* vtx, float xmax)
+{
+  SWNVGedge* e;
+  // Skip horizontal edges
+  if (vtx->y0 == vtx->y1) return;
+  if (r->nedges+1 > r->cedges) {
+    r->cedges = r->cedges > 0 ? r->cedges * 2 : 64;
+    r->edges = (SWNVGedge*)realloc(r->edges, sizeof(SWNVGedge) * r->cedges);
+    if (r->edges == NULL) return;
+  }
+  e = &r->edges[r->nedges];
+  r->nedges++;
+  e->x0 = vtx->x0;
+  e->y0 = vtx->y0;
+  e->x1 = vtx->x1;
+  e->y1 = vtx->y1;
+  e->dir = ceilf(xmax);
+}
+
+static float areaEdge2(float v0x, float v0y, float v1x, float v1y, float slope)
+{
+  float win0 = swnvg__clampf(v0x, -0.5f, 0.5f);
+  float win1 = swnvg__clampf(v1x, -0.5f, 0.5f);
+  float width = win1 - win0;
+  if(width == 0)
+    return 0;
+  if(slope == 0)
+    return width * swnvg__clampf(0.5f - v0y, 0.0f, 1.0f);
+  float midx = 0.5f*(win0 + win1);
+  float y = v0y + (midx - v0x)*slope;  // y value at middle of window
+  float dy = fabsf(slope*width);
+  float sx = swnvg__clampf(y + 0.5f*dy + 0.5f, 0.0f, 1.0f);  // shift from -0.5..0.5 to 0..1 for area calc
+  float sy = swnvg__clampf(y - 0.5f*dy + 0.5f, 0.0f, 1.0f);
+  float sz = swnvg__clampf((0.5f - y)/dy + 0.5f, 0.0f, 1.0f);
+  float sw = swnvg__clampf((-0.5f - y)/dy + 0.5f, 0.0f, 1.0f);
+  float area = 0.5f*(sz - sz*sy + 1.0f - sx + sx*sw);  // +1.0 for fill in +y direction, -1.0 for -y direction
+  return area * width;
+}
+
+static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
+{
+  int i, ix, iy;  //, ix0, iy0, iy1, ix1;
+  SWNVGcontext* gl = r->context;
+  SWNVGedge* edge = &gl->edges[call->edgeOffset];
+  for(i = 0; i < call->edgeCount; ++i, ++edge) {
+    //if(edge->y0 == edge->y1) continue;  -- horizontal edges are never added to list
+    int xedge = swnvg__mini(edge->dir, r->x1);
+    int dir = edge->y0 > edge->y1 ? -1 : 1;
+    float ymin = swnvg__minf(edge->y0, edge->y1);
+    float ymax = swnvg__maxf(edge->y0, edge->y1);
+    int iymin = swnvg__maxi((int)ymin, r->y0);
+    int iymax = swnvg__mini((int)ymax, r->y1);
+    float invslope = (edge->x1 - edge->x0)/(edge->y1 - edge->y0);
+    // x coords at top and bottom of current row
+    float xtop = edge->y0 > edge->y1 ? edge->x1 : edge->x0;
+    float xt = (iymin - ymin)*invslope + xtop;
+    float xb = xt + invslope;
+    float xmin = swnvg__minf(xt, xb);
+    float xmax = swnvg__maxf(xt, xb);
+    int ixleft = swnvg__maxi(swnvg__minf(edge->x0, edge->x1), r->x0);
+    int ixright = swnvg__mini(swnvg__maxf(edge->x0, edge->x1), r->x1);
+
+    for(iy = iymin; iy <= iymax; ++iy) {
+      int ixmin = swnvg__maxi((int)xmin, ixleft);
+      int ixmax = swnvg__mini((int)xmax, ixright);
+      float* dst = &gl->covtex[iy*gl->width + ixmin];
+      float cov = dir*(swnvg__minf(ymax, iy+1) - swnvg__maxf(ymin, iy));  // coverage for remaining pixels
+      for(ix = ixmin; ix <= ixmax; ++ix)
+        *dst++ += areaEdge2(edge->y0 - iy - 0.5f, edge->x0 - ix - 0.5f, edge->y1 - iy - 0.5f, edge->x1 - ix - 0.5f, invslope);
+      for(; ix <= xedge; ++ix)
+        *dst++ += cov;
+      xmin += invslope;
+      xmax += invslope;
+    }
+  }
+
+  // fill
+  int xb0 = swnvg__maxi(call->bounds[0], r->x0);
+  int yb0 = swnvg__maxi(call->bounds[1], r->y0);
+  int xb1 = swnvg__mini(call->bounds[2], r->x1);
+  int yb1 = swnvg__mini(call->bounds[3], r->y1);
+  int count = xb1 - xb0 + 1;
+  int linear = call->flags & NVG_SRGB ? 1 : 0;
+  rgba32_t c = call->innerCol;
+  for(iy = yb0; iy <= yb1; ++iy) {
+    unsigned char* dst = &gl->bitmap[iy*gl->stride + xb0*4];
+    float* cover = &gl->covtex[iy*gl->width + xb0];
+    if (call->type == SWNVG_PAINT_COLOR) {
+      // handle solid color directly for better performance
+      if(RGBA32_IS_OPAQUE(c)) {
+        for(i = 0; i < count; ++i, ++cover, dst += 4) {
+          if(*cover != 0) {
+            swnvg__blendOpaque(dst, swnvg__mini(fabsf(*cover)*255 + 0.5f, 255), c, linear);
+            *cover = 0;
+          }
+        }
+      }
+      else {
+        for(i = 0; i < count; ++i, ++cover, dst += 4) {
+          if(*cover != 0) {
+            swnvg__blend(dst, swnvg__mini(fabsf(*cover)*255 + 0.5f, 255), COLOR0(c), COLOR1(c), COLOR2(c), COLOR3(c), linear);
+            *cover = 0;
+          }
+        }
+      }
+    }
+    else {
+      // images and gradients
+      unsigned char* sl = r->scanline;
+      for(i = 0; i < count; ++i, ++cover, ++sl) {
+        if(*cover != 0) {
+          *sl = swnvg__mini(fabsf(*cover)*255 + 0.5f, 255);
+          *cover = 0;
+        }
+        else
+          *sl = 0;
+      }
+      swnvg__scanlineSolid(dst, count, r->scanline, xb0, iy, call);
+    }
+  }
+}
+
+
 // cut and paste from stbtt; this benchmarks much faster than qsort() and a bit faster than a naive quicksort
 #define SWNVG__COMPARE(a,b) ((a)->y0 < (b)->y0)
 
@@ -929,44 +1113,70 @@ static void swnvg__quickSortEdges(SWNVGedge* p, int n)
   }
 }
 
-static void swnvg__sortEdges(SWNVGedge* p, int n)
+static void swnvg__sortCallEdges(SWNVGedge* p, int n)
 {
   swnvg__quickSortEdges(p, n);
   swnvg__insSortEdges(p, n);
 }
 
+static void swnvg__sortEdges(void* arg)
+{
+  int i, nthreads;
+  SWNVGthreadCtx* r = (SWNVGthreadCtx*)arg;
+  SWNVGcontext* gl = r->context;
+  nthreads = gl->xthreads*gl->ythreads;
+  for (i = r->threadnum; i < gl->ncalls; i += nthreads) {
+    SWNVGcall* call = &gl->calls[i];
+    if(!(call->flags & NVG_PATH_XC))
+      swnvg__sortCallEdges(&gl->edges[call->edgeOffset], call->edgeCount);
+  }
+}
+
+static void swnvg__rasterize(void* arg)
+{
+  int i, j;
+  SWNVGthreadCtx* r = (SWNVGthreadCtx*)arg;
+  SWNVGcontext* gl = r->context;
+  for (i = 0; i < gl->ncalls; i++) {
+    SWNVGcall* call = &gl->calls[i];
+    if(call->bounds[0] <= r->x1 && call->bounds[1] <= r->y1 && call->bounds[2] >= r->x0 && call->bounds[3] >= r->y0) {
+      call->tex = swnvg__findTexture(gl, call->image);
+      if(call->type == SWNVG_PAINT_ATLAS) {
+        SWNVGtexture* tex = swnvg__findTexture(gl, call->image);
+        NVGvertex* verts = &gl->verts[call->triangleOffset];
+        for(j = 0; j < call->triangleCount; j += 2) {
+          swnvg__rasterizeQuad(r, call, tex, &verts[j], &verts[j+1]);
+        }
+      } else {
+        if(call->flags & NVG_PATH_XC)
+          swnvg__rasterizeXC(r, call);
+        else {
+          swnvg__resetPool(r);
+          r->freelist = NULL;
+          swnvg__rasterizeSortedEdges(r, call);
+        }
+      }
+    }
+  }
+}
+
 static void swnvg__renderFlush(void* uptr)
 {
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
-  int i, j;
+  int i, nthreads = gl->xthreads*gl->ythreads;
   if (gl->ncalls == 0) return;
-  gl->stride = 4*gl->width;
-  if (gl->width > gl->cscanline) {
-    gl->cscanline = gl->width;
-    gl->scanline = (unsigned char*)realloc(gl->scanline, gl->width);
-    if (gl->scanline == NULL) return;
-    memset(gl->scanline, 0, gl->width);
-  }
   // we assume dest buffer has already been cleared -- for(i = 0; i < h; i++) memset(&dst[i*stride], 0, w*4);
-
-  for (i = 0; i < gl->ncalls; i++) {
-    SWNVGcall* call = &gl->calls[i];
-    call->tex = swnvg__findTexture(gl, call->image);
-    if(call->type == SWNVG_PAINT_ATLAS) {
-      SWNVGtexture* tex = swnvg__findTexture(gl, call->image);
-      NVGvertex* verts = &gl->verts[call->triangleOffset];
-      for(j = 0; j < call->triangleCount; j += 2) {
-        swnvg__rasterizeQuad(gl, call, tex, &verts[j], &verts[j+1]);
-      }
-    } else {
-      swnvg__resetPool(gl);
-      gl->freelist = NULL;
-      // sort edges
-      //qsort(&gl->edges[call->edgeOffset], call->edgeCount, sizeof(SWNVGedge), swnvg__cmpEdge);
-      swnvg__sortEdges(&gl->edges[call->edgeOffset], call->edgeCount);
-      // now, traverse the scanlines and find the intersections on each scanline, use non-zero rule
-      swnvg__rasterizeSortedEdges(gl, call);
-    }
+  if(nthreads > 1) {
+    for(i = 0; i < nthreads; ++i)
+      gl->poolSubmit(swnvg__sortEdges, &gl->threads[i]);
+    gl->poolWait();
+    for(i = 0; i < nthreads; ++i)
+      gl->poolSubmit(swnvg__rasterize, &gl->threads[i]);
+    gl->poolWait();
+  }
+  else {
+    swnvg__sortEdges(gl->threads);
+    swnvg__rasterize(gl->threads);
   }
   // Reset calls
   gl->nverts = 0;
@@ -1049,6 +1259,7 @@ static int swnvg__convertPaint(SWNVGcontext* gl, SWNVGcall* call, NVGpaint* pain
 
   if (paint->image != 0) {
     call->image = paint->image;
+    call->radius = paint->radius;  // distance offset for SDF text
     //tex = swnvg__findTexture(gl, paint->image);
     //if (tex == NULL) return 0;
     //if ((tex->flags & NVG_IMAGE_FLIPY) != 0) {
@@ -1089,6 +1300,14 @@ static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
   if (call == NULL) return;
 
   swnvg__convertPaint(gl, call, paint, scissor, flags);
+  if((gl->flags & NVGSW_PATHS_XC) && !(call->flags & NVG_PATH_NO_AA) && !(call->flags & NVG_PATH_EVENODD)) {
+    call->flags |= NVG_PATH_XC;
+    if(!gl->covtex) {
+      size_t n = gl->width * gl->height * sizeof(float);
+      gl->covtex = (float*)malloc(n);
+      memset(gl->covtex, 0, n);
+    }
+  }
   // since bounds are inclusive, a bit tricky to distinguish totally clipped path later
   if (ibounds[0] > call->bounds[2] || ibounds[1] > call->bounds[3]
       || ibounds[2] < call->bounds[0] || ibounds[3] < call->bounds[1]) {
@@ -1105,7 +1324,10 @@ static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
   for (i = 0; i < npaths; ++i) {
     const NVGpath* path = &paths[i];
     for(j = 0; j < path->nfill; ++j)
-      swnvg__addEdge(gl, &path->fill[j]);
+      if(call->flags & NVG_PATH_XC)
+        swnvg__addEdgeXC(gl, &path->fill[j], path->bounds[2]);
+      else
+        swnvg__addEdge(gl, &path->fill[j]);
   }
   call->edgeCount = gl->nedges - call->edgeOffset;
 }
@@ -1135,17 +1357,22 @@ static void swnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOper
 
 static void swnvg__renderDelete(void* uptr)
 {
-  SWNVGmemPage* p;
+  int ii, nthreads;
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
   if (gl == NULL) return;
-  p = gl->pages;
-  while (p != NULL) {
-    SWNVGmemPage* next = p->next;
-    free(p);
-    p = next;
+
+  nthreads = gl->xthreads*gl->ythreads;
+  for(ii = 0; ii < nthreads; ++ii) {
+    SWNVGmemPage* p = gl->threads[ii].pages;
+    while (p != NULL) {
+      SWNVGmemPage* next = p->next;
+      free(p);
+      p = next;
+    }
+    free(gl->threads[ii].scanline);
   }
+  free(gl->covtex);
   free(gl->textures);
-  free(gl->scanline);
   free(gl->verts);
   free(gl->calls);
   free(gl->edges);
@@ -1179,6 +1406,15 @@ NVGcontext* nvgswCreate(int flags)
   gl->flags = flags;
   ctx = nvgCreateInternal(&params);
   if (ctx == NULL) goto error;
+  // default (no threading) setup
+  gl->xthreads = 1;
+  gl->ythreads = 1;
+  gl->threads = (SWNVGthreadCtx*)malloc(sizeof(SWNVGthreadCtx));
+  if (gl->threads == NULL) goto error;
+  memset(gl->threads, 0, sizeof(SWNVGthreadCtx));
+  gl->threads[0].threadnum = 0;
+  gl->threads[0].context = gl;
+
   return ctx;
 error:
   // 'gl' is freed by swnvg__renderDelete via nvgDeleteInternal
@@ -1186,11 +1422,53 @@ error:
   return NULL;
 }
 
-void nvgswSetFramebuffer(NVGcontext* vg, void* dest, int w, int h, int rshift, int gshift, int bshift, int ashift)
+void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads, poolSubmit_t submit, poolWait_t wait)
 {
   SWNVGcontext* gl = (SWNVGcontext*)nvgInternalParams(vg)->userPtr;
+  int i, nthreads = xthreads*ythreads;
+  if (nthreads < 2) return;
+  gl->threads = (SWNVGthreadCtx*)malloc(sizeof(SWNVGthreadCtx) * nthreads);
+  if (gl->threads == NULL) return;
+  memset(gl->threads, 0, sizeof(SWNVGthreadCtx) * nthreads);
+  for (i = 0; i < nthreads; ++i) {
+    gl->threads[i].threadnum = i;
+    gl->threads[i].context = gl;
+  }
+  gl->xthreads = xthreads;
+  gl->ythreads = ythreads;
+  gl->poolSubmit = submit;
+  gl->poolWait = wait;
+  NVG_LOG("nvg2: %d x %d threads\n", xthreads, ythreads);
+}
+
+void nvgswSetFramebuffer(NVGcontext* vg, void* dest, int w, int h, int rshift, int gshift, int bshift, int ashift)
+{
+  int ii, jj;
+  SWNVGcontext* gl = (SWNVGcontext*)nvgInternalParams(vg)->userPtr;
+  if(gl->covtex && (w != gl->width || h != gl->height)) {
+    free(gl->covtex);
+    gl->covtex = NULL;
+  }
   gl->bitmap = (unsigned char*)dest;  gl->width = w;  gl->height = h;  gl->stride = 4*w;
   gl->rshift = rshift;  gl->gshift = gshift;  gl->bshift = bshift;  gl->ashift = ashift;
+
+  int threadw = w/gl->xthreads + 1;
+  int threadh = h/gl->ythreads + 1;
+  for (jj = 0; jj < gl->ythreads; ++jj) {
+    for (ii = 0; ii < gl->xthreads; ++ii) {
+      SWNVGthreadCtx* r = &gl->threads[jj*gl->xthreads + ii];
+      r->x0 = ii*threadw;
+      r->y0 = jj*threadh;
+      r->x1 = swnvg__mini(w, r->x0 + threadw) - 1;
+      r->y1 = swnvg__mini(h, r->y0 + threadh) - 1;
+      if (r->x1 - r->x0 + 1 > r->cscanline) {
+        r->cscanline = r->x1 - r->x0 + 1;
+        r->scanline = (unsigned char*)realloc(r->scanline, r->cscanline);
+        if (r->scanline == NULL) return;
+        memset(r->scanline, 0, r->cscanline);
+      }
+    }
+  }
 }
 
 void nvgswDelete(NVGcontext* ctx)

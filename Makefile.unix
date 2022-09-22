@@ -6,7 +6,7 @@ CXXFLAGS = --std=c++14 -fno-rtti -fno-exceptions -Werror=return-type
 CC = gcc
 CCFLAGS = --std=c99 -Werror=implicit-function-declaration -Werror=int-conversion
 # use gcc instead of g++ to link C-only project
-LD = gcc
+LD = g++
 LDFLAGS =
 
 DEBUG ?= 0
@@ -14,7 +14,8 @@ ifneq ($(DEBUG), 0)
 	CFLAGS += -g
 	BUILDDIR = Debug
 else
-	CFLAGS += -O2 -march=native -DNDEBUG
+  #-march=native ... prevents use of valgrind/callgrind
+	CFLAGS += -O2 -DNDEBUG
 	BUILDDIR = Release
 endif
 
@@ -25,10 +26,12 @@ ifneq ($(SANITIZE), 0)
 endif
 
 # disable optimizations which make profiling difficult, esp. inlining; frame pointer needed for sampling
+# -pg for gprof, -coverage for gcov
+# generating .gcov reports: (cd Release && cp `ff '*.gc??' .) && gcov -o Release <src file>
 PROFILE ?= 0
 ifneq ($(PROFILE), 0)
   CFLAGS += -fno-omit-frame-pointer -g
-  LDFLAGS += -rdynamic
+  LDFLAGS += -rdynamic -g
 endif
 
 # project independent stuff
@@ -61,6 +64,12 @@ BUILDDIRS=$(sort $(dir $(OBJ)))
 .PHONY: all clean distclean
 
 all: $(TGT)
+
+# this is how to create a rule applying only to a list of specific files
+#FCPPBASE=$(basename $(FORCECPP))
+#FCPPOBJ=$(FCPPBASE:%=$(OBJDIR)/%.o)
+#$(FCPPOBJ): $(OBJDIR)/%.o: %.c
+#	$(CXX) -c $(CFLAGS) $(CXXFLAGS) $(INCFLAGS) -o $@ $<
 
 $(OBJDIR)/%.o: %.cpp
 	$(CXX) -c $(CFLAGS) $(CXXFLAGS) $(INCFLAGS) -o $@ $<

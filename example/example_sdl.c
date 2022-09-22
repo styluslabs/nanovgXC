@@ -23,6 +23,7 @@
 #define NANOVG_GLES3_IMPLEMENTATION
 #endif
 
+//#define FONS_SDF
 #define NANOVG_SW_IMPLEMENTATION
 #define NVGSWU_GLES3
 
@@ -40,6 +41,10 @@
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 #include "tests.c"
+
+#ifndef NO_THREADING
+#include "threadpool.h"
+#endif
 
 int SDL_main(int argc, char* argv[])
 {
@@ -64,12 +69,15 @@ int SDL_main(int argc, char* argv[])
   int dirty = 1;
   int contFPS = 1;
   int useFramebuffer = 0;
+  int numThreads = 0;
+  int testSet = 0;
   float shiftx = 0;
   float shifty = 0;
   float scale = 1.0f;
   float radians = 0;
   float angle = 0;
-  float fontsize = 20.0f;
+  float fontsize = 24.0f;
+  float fontblur = 0;
   double prevt = 0;
   // default file for svg test
   const char* svgFile = DATA_PATH("svg/tiger.svg");  //"svg/Opt_page1.svg");
@@ -114,6 +122,10 @@ int SDL_main(int argc, char* argv[])
       swRender = atoi(argv[argi]);
     if(strcmp(argv[argi], "--fps") == 0 && ++argi < argc)
       contFPS = atoi(argv[argi]);
+    if(strcmp(argv[argi], "--threads") == 0 && ++argi < argc)
+      numThreads = atoi(argv[argi]);
+    if(strcmp(argv[argi], "--test") == 0 && ++argi < argc)
+      testSet = atoi(argv[argi]);
     if(strcmp(argv[argi], "--svg") == 0 && ++argi < argc)
       svgFile = argv[argi];
   }
@@ -132,20 +144,29 @@ int SDL_main(int argc, char* argv[])
 
   // SW renderer
   SDL_Surface* sdlSurface = NULL;
-  if(swRender == 1) {
-    sdlSurface = SDL_GetWindowSurface(sdlWindow);
+  if(swRender != 0) {
     vg = nvgswCreate(nvgFlags);
-    SDL_PixelFormat* fmt = sdlSurface->format;
-    // have to set pixel format before loading any images
-    nvgswSetFramebuffer(vg, sdlSurface->pixels, sdlSurface->w, sdlSurface->h, fmt->Rshift, fmt->Gshift, fmt->Bshift, 24);
-  } else if (swRender == 2) {
-    sdlContext = SDL_GL_CreateContext(sdlWindow);
-#ifdef __glad_h_
-    gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress);
+#ifndef NO_THREADING
+    if(numThreads == 0)
+      numThreads = numCPUCores();
+    if(numThreads > 1) {
+      poolInit(numThreads);
+      nvgswSetThreading(vg, numThreads/2, 2, poolSubmit, poolWait);
+    }
 #endif
-    swBlitter = nvgswuCreateBlitter();
-    vg = nvgswCreate(nvgFlags);
-    nvgswSetFramebuffer(vg, NULL, 800, 800, 0, 8, 16, 24);
+    if(swRender == 1) {
+      sdlSurface = SDL_GetWindowSurface(sdlWindow);
+      SDL_PixelFormat* fmt = sdlSurface->format;
+      // have to set pixel format before loading any images
+      nvgswSetFramebuffer(vg, sdlSurface->pixels, sdlSurface->w, sdlSurface->h, fmt->Rshift, fmt->Gshift, fmt->Bshift, 24);
+    } else if(swRender == 2) {
+      sdlContext = SDL_GL_CreateContext(sdlWindow);
+  #ifdef __glad_h_
+      gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress);
+  #endif
+      swBlitter = nvgswuCreateBlitter();
+      nvgswSetFramebuffer(vg, NULL, 800, 800, 0, 8, 16, 24);
+    }
   } else {
 #ifdef NVG_GL
     sdlContext = SDL_GL_CreateContext(sdlWindow);
@@ -256,7 +277,7 @@ int SDL_main(int argc, char* argv[])
     //noAATest(vg);
     //gammaTests(vg);
     //gammaTests2(vg, testNum);
-    //svgTest(vg, fbWidth, fbHeight);
+    //svgTest(vg, "Opt_page1.svg", fbWidth, fbHeight);
 
     //fillRect(vg, 100, 100, 200, 200, nvgRGBA(0,0,255,128));
     //nvgShapeAntiAlias(vg, 0);
@@ -264,16 +285,22 @@ int SDL_main(int argc, char* argv[])
     //fillRect(vg, 250, 550, 200, 200, nvgRGBA(0,0,255,128));
     //fillRect(vg, 250, 250, 200, 200, nvgRGBA(0,0,255,128));
 
-    textTest2(vg, testNum);  //textPerformance(vg, testNum, 12);
-
-    ///if (testNum % 4 == 0)
-    ///  renderDemo(vg, mx,my, fbWidth, fbHeight, t - t0, blowup, &data);
-    ///else if (testNum % 4 == 1)
-    ///  bigPathsTest(vg, 20, fbWidth, fbHeight);
-    ///else if (testNum % 4 == 2)
-    ///  smallPathsTest(vg, fbWidth, fbHeight);
-    ///else
-    ///  svgTest(vg, svgFile, fbWidth, fbHeight);
+    //textTest2(vg, testNum);
+    if(testSet == 2)
+      bigPathsTest(vg, 1, 1, fbWidth, fbHeight);
+    else if(testSet == 1)
+      textPerformance(vg, testNum, fontsize, fontblur);
+    else {
+      // this is our standard performance test set
+      if (testNum % 4 == 0)
+        renderDemo(vg, mx,my, fbWidth, fbHeight, t - t0, blowup, &data);
+      else if (testNum % 4 == 1)
+        bigPathsTest(vg, 5, 4, fbWidth, fbHeight);
+      else if (testNum % 4 == 2)
+        smallPathsTest(vg, fbWidth, fbHeight);
+      else
+        svgTest(vg, svgFile, fbWidth, fbHeight);
+    }
 
     nvgResetTransform(vg);
     nvgTranslate(vg, 0, fbHeight - 50);  // move to bottom away from status bar
@@ -324,8 +351,10 @@ int SDL_main(int argc, char* argv[])
           screenshot = 1;
         else if (key == SDLK_p)
           premult = !premult;
-        else if (key == SDLK_t)
+        else if (key == SDLK_t) {
           ++testNum;
+          initGraph(&fps, GRAPH_RENDER_FPS, "Frame Time");  // reset FPS graph
+        }
         else if (key == SDLK_LEFTBRACKET)
           radians += step;
         else if (key == SDLK_RIGHTBRACKET)
@@ -346,10 +375,14 @@ int SDL_main(int argc, char* argv[])
           angle += step;
         else if (key == SDLK_PAGEUP)
           angle -= step;
-        else if (key == SDLK_EQUALS)
-          fontsize += 1;
-        else if (key == SDLK_MINUS)
-          fontsize -= 1;
+        else if (key == SDLK_QUOTE) {
+          if(event.key.keysym.mod & KMOD_SHIFT) fontblur += step;
+          else fontsize += 1;
+        }
+        else if (key == SDLK_SEMICOLON){
+          if(event.key.keysym.mod & KMOD_SHIFT) fontblur -= step;
+          else fontsize -= 1;
+        }
         else if (key == SDLK_F12)
           contFPS = !contFPS;
         else if (key == SDLK_HOME) {
@@ -366,8 +399,10 @@ int SDL_main(int argc, char* argv[])
             && event.window.event != SDL_WINDOWEVENT_RESIZED)
           continue;
       }
-      else if(event.type == SDL_FINGERDOWN) // || event.type == SDL_MOUSEBUTTONDOWN)
+      else if(event.type == SDL_FINGERDOWN) { // || event.type == SDL_MOUSEBUTTONDOWN)
         ++testNum;
+        initGraph(&fps, GRAPH_RENDER_FPS, "Frame Time");
+      }
       else
         continue;
       dirty = 1;
