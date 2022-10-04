@@ -3,7 +3,7 @@
 
 TARGET = demo2_sdl
 SOURCES = src/nanovg.c example/threadpool.cpp example/perf.c example/demo.c example/example_sdl.c
-INC = src example glad ../ulib
+INC = src example glad
 INCSYS = example/stb
 
 # to enable threading for SW renderer (uses std::thread, etc)
