@@ -905,7 +905,10 @@ static void swnvg__renderCancel(void* uptr)
   gl->ncalls = 0;
 }
 
-// exact coverage rasterization based on GPU renderer
+// exact coverage rasterization based on GPU renderer (nanovg_gl.h)
+// - we now store the difference in coverage from the pixel to left, so we no longer write solid runs or
+//  recalculate integer coverage for every pixel of solid runs.  With this change, performance matches non-XC
+//  for big paths and beats non-XC for small paths.
 
 static void swnvg__addEdgeXC(SWNVGcontext* r, NVGvertex* vtx, float xmax)
 {
@@ -950,15 +953,20 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
 {
   int i, ix, iy;  //, ix0, iy0, iy1, ix1;
   SWNVGcontext* gl = r->context;
+  // note that edges may lie outside bounds due to scissoring
+  int xb0 = swnvg__maxi(call->bounds[0], r->x0);
+  int yb0 = swnvg__maxi(call->bounds[1], r->y0);
+  int xb1 = swnvg__mini(call->bounds[2], r->x1);
+  int yb1 = swnvg__mini(call->bounds[3], r->y1);
   SWNVGedge* edge = &gl->edges[call->edgeOffset];
   for(i = 0; i < call->edgeCount; ++i, ++edge) {
     //if(edge->y0 == edge->y1) continue;  -- horizontal edges are never added to list
-    int xedge = swnvg__mini(edge->dir, r->x1);
+    int xedge = swnvg__mini(edge->dir, xb1);
     int dir = edge->y0 > edge->y1 ? -1 : 1;
     float ymin = swnvg__minf(edge->y0, edge->y1);
     float ymax = swnvg__maxf(edge->y0, edge->y1);
-    int iymin = swnvg__maxi((int)ymin, r->y0);
-    int iymax = swnvg__mini((int)ymax, r->y1);
+    int iymin = swnvg__maxi((int)ymin, yb0);
+    int iymax = swnvg__mini((int)ymax, yb1);
     float invslope = (edge->x1 - edge->x0)/(edge->y1 - edge->y0);
     // x coords at top and bottom of current row
     float xtop = edge->y0 > edge->y1 ? edge->x1 : edge->x0;
@@ -966,63 +974,71 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
     float xb = xt + invslope;
     float xmin = swnvg__minf(xt, xb);
     float xmax = swnvg__maxf(xt, xb);
-    int ixleft = swnvg__maxi(swnvg__minf(edge->x0, edge->x1), r->x0);
-    int ixright = swnvg__mini(swnvg__maxf(edge->x0, edge->x1), r->x1);
+    int ixleft = swnvg__maxi(swnvg__minf(edge->x0, edge->x1), xb0);
+    int ixright = swnvg__mini(swnvg__maxf(edge->x0, edge->x1), xb1);
 
     for(iy = iymin; iy <= iymax; ++iy) {
       int ixmin = swnvg__maxi((int)xmin, ixleft);
       int ixmax = swnvg__mini((int)xmax, ixright);
       float* dst = &gl->covtex[iy*gl->width + ixmin];
-      float cov = dir*(swnvg__minf(ymax, iy+1) - swnvg__maxf(ymin, iy));  // coverage for remaining pixels
-      for(ix = ixmin; ix <= ixmax; ++ix)
-        *dst++ += areaEdge2(edge->y0 - iy - 0.5f, edge->x0 - ix - 0.5f, edge->y1 - iy - 0.5f, edge->x1 - ix - 0.5f, invslope);
-      for(; ix <= xedge; ++ix)
-        *dst++ += cov;
+      float cov = 0;
+      for(ix = ixmin; ix <= ixmax; ++ix) {
+        float c = areaEdge2(edge->y0 - iy - 0.5f, edge->x0 - ix - 0.5f, edge->y1 - iy - 0.5f, edge->x1 - ix - 0.5f, invslope);
+        *dst++ += c - cov;
+        cov = c;
+      }
+      // coverage for remaining pixels
+      if(ix <= xedge)
+        *dst += dir*(swnvg__minf(ymax, iy+1) - swnvg__maxf(ymin, iy)) - cov;
       xmin += invslope;
       xmax += invslope;
     }
   }
 
   // fill
-  int xb0 = swnvg__maxi(call->bounds[0], r->x0);
-  int yb0 = swnvg__maxi(call->bounds[1], r->y0);
-  int xb1 = swnvg__mini(call->bounds[2], r->x1);
-  int yb1 = swnvg__mini(call->bounds[3], r->y1);
   int count = xb1 - xb0 + 1;
   int linear = call->flags & NVG_SRGB ? 1 : 0;
   rgba32_t c = call->innerCol;
   for(iy = yb0; iy <= yb1; ++iy) {
     unsigned char* dst = &gl->bitmap[iy*gl->stride + xb0*4];
-    float* cover = &gl->covtex[iy*gl->width + xb0];
+    float* dcover = &gl->covtex[iy*gl->width + xb0];
+    float cover = 0;
+    int icover = 0;
     if (call->type == SWNVG_PAINT_COLOR) {
       // handle solid color directly for better performance
       if(RGBA32_IS_OPAQUE(c)) {
-        for(i = 0; i < count; ++i, ++cover, dst += 4) {
-          if(*cover != 0) {
-            swnvg__blendOpaque(dst, swnvg__mini(fabsf(*cover)*255 + 0.5f, 255), c, linear);
-            *cover = 0;
+        for(i = 0; i < count; ++i, ++dcover, dst += 4) {
+          if(*dcover != 0) {
+            cover += *dcover;
+            icover = swnvg__mini(fabsf(cover)*255 + 0.5f, 255);
+            *dcover = 0;
           }
+          if(icover > 0)
+            swnvg__blendOpaque(dst, icover, c, linear);
         }
       }
       else {
-        for(i = 0; i < count; ++i, ++cover, dst += 4) {
-          if(*cover != 0) {
-            swnvg__blend(dst, swnvg__mini(fabsf(*cover)*255 + 0.5f, 255), COLOR0(c), COLOR1(c), COLOR2(c), COLOR3(c), linear);
-            *cover = 0;
+        for(i = 0; i < count; ++i, ++dcover, dst += 4) {
+          if(*dcover != 0) {
+            cover += *dcover;
+            icover = swnvg__mini(fabsf(cover)*255 + 0.5f, 255);
+            *dcover = 0;
           }
+          if(icover > 0)
+            swnvg__blend(dst, icover, COLOR0(c), COLOR1(c), COLOR2(c), COLOR3(c), linear);
         }
       }
     }
     else {
       // images and gradients
       unsigned char* sl = r->scanline;
-      for(i = 0; i < count; ++i, ++cover, ++sl) {
-        if(*cover != 0) {
-          *sl = swnvg__mini(fabsf(*cover)*255 + 0.5f, 255);
-          *cover = 0;
+      for(i = 0; i < count; ++i, ++dcover, ++sl) {
+        if(*dcover != 0) {
+          cover += *dcover;
+          icover = swnvg__mini(fabsf(cover)*255 + 0.5f, 255);
+          *dcover = 0;
         }
-        else
-          *sl = 0;
+        *sl = icover;
       }
       swnvg__scanlineSolid(dst, count, r->scanline, xb0, iy, call);
     }

@@ -732,7 +732,16 @@ paris-30k (half-screen): 7 / 9.4
 Opt_page1 (half-screen): 140 / 105
 
 XC 8 threads, big/small/tiger/Opt_page1/paris-30k: 12/50/50/90/8.5
-- basically, faster for small paths, slower for big paths
+
+8 threads, half-screen, text/big/small/tiger/Opt_page1/paris-30k:
+non-XC:  25/27/32/61/92/7.6  (less than above due to other tasks?)
+XC:      52/20/42/47/94/7.7
+diff-XC: 55/26/43/60/106/8.0
+
+1 thread, Linux VM, no sRGB, big/small/tiger/text:
+non-XC: 4.9/6.7/8.3/6.4
+XC:     4.9/9.5/8.3/14
+diff-XC: 6.5/8.5/11.5/14.5
 
 multi-threaded SW on iPad: some improvement over single thread (best w/ 2 threads) but still slower than GPU
 1x: 12.5 / 40 / 17 / 12.4 (small / Opt_page1 / text summed / text paths)

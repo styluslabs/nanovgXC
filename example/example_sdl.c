@@ -118,6 +118,8 @@ int SDL_main(int argc, char* argv[])
   for(int argi = 1; argi < argc; ++argi) {
     if(strcmp(argv[argi], "--flags") == 0 && ++argi < argc)
       nvgFlags = atoi(argv[argi]);
+    if(strcmp(argv[argi], "--orflags") == 0 && ++argi < argc)
+      nvgFlags |= atoi(argv[argi]);
     if(strcmp(argv[argi], "--sw") == 0 && ++argi < argc)
       swRender = atoi(argv[argi]);
     if(strcmp(argv[argi], "--fps") == 0 && ++argi < argc)
