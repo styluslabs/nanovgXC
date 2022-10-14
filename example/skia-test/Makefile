@@ -1,14 +1,17 @@
 # simple C/C++ makefile
 # - generates files in ./Release (default) or ./Debug (with DEBUG=1 passed to make)
 
-TARGET = demo2_sdl
-SOURCES = src/nanovg.c example/threadpool.cpp example/perf.c example/demo.c example/example_sdl.c
-INC = src example glad
-INCSYS = example/stb
+## skia.lib obtained from https://github.com/rust-skia/skia-binaries/releases
+## specifically: https://github.com/rust-skia/skia-binaries/releases/download/0.55.0/skia-binaries-94c343245161df4a8f67-x86_64-pc-windows-msvc-gl.tar.gz
+## skia source (for headers) from git clone --depth 1 https://github.com/google/skia.git
 
-#DEFS += FONS_SDF  -- to use SDF text rendering
-# to enable threading for SW renderer (uses std::thread, etc)
-#FORCECPP = example/example_sdl.c
+## make, then run, e.g., "Release\skia_sdl.exe --svg ..\svg\tiger.svg" to test Skia GPU
+## - add "--sw 1" to test Skia CPU
+
+TARGET = skia_sdl
+SOURCES = SkiaSDLTest.cpp
+INC = ..
+INCSYS = skia
 
 # machine specific or private configuration not committed to git (e.g. iOS signing info)
 -include Makefile.local
@@ -16,9 +19,12 @@ INCSYS = example/stb
 ifneq ($(windir),)
 # Windows
 
-SOURCES += glad/glad.c
-INCSYS += ../SDL/include
+SOURCES += ../../glad/glad.c
+INCSYS += ../../glad ../../../SDL/include
 DEFS += _USE_MATH_DEFINES UNICODE NOMINMAX
+
+# need to set TOPDIR since we have .. paths in SOURCES
+TOPDIR = example/skia-test
 
 # only dependencies under this path will be tracked in .d files; note [\\] must be used for "\"
 # ensure that no paths containing spaces are included
@@ -26,7 +32,8 @@ DEPENDBASE ?= c:[\\]temp[\\]styluslabs
 
 # for dynamically linked Windows SDL libraries, both SDL2.lib and SDL2main.lib are needed
 LIBS = \
-  ../SDL/Release/SDL2.lib \
+  ../../../SDL/Release/SDL2-MD.lib \
+	skia.lib \
   glu32.lib \
   opengl32.lib \
   gdi32.lib \
@@ -41,6 +48,9 @@ LIBS = \
   version.lib
 
 RESOURCES =
+
+# skia.lib uses /MD, so override our /MT default
+CFLAGS = /MD
 
 include Makefile.msvc
 

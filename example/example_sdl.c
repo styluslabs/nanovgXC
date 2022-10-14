@@ -128,8 +128,10 @@ int SDL_main(int argc, char* argv[])
       numThreads = atoi(argv[argi]);
     if(strcmp(argv[argi], "--test") == 0 && ++argi < argc)
       testSet = atoi(argv[argi]);
-    if(strcmp(argv[argi], "--svg") == 0 && ++argi < argc)
+    if(strcmp(argv[argi], "--svg") == 0 && ++argi < argc) {
       svgFile = argv[argi];
+      testNum = 3;  // if svg file specified, show it immediately
+    }
   }
   if(nvgFlags & NVG_SRGB) {
     fbFlags |= NVG_IMAGE_SRGB;
@@ -144,13 +146,19 @@ int SDL_main(int argc, char* argv[])
   }
   double countToSec = 1.0/SDL_GetPerformanceFrequency();
 
+  // estimate DPI
+  SDL_Rect r;
+  int disp = SDL_GetWindowDisplayIndex(sdlWindow);
+  SDL_GetDisplayBounds(disp < 0 ? 0 : disp, &r);
+  float DPI = (r.h > r.w ? r.h : r.w)/11.2f;  // 12.3in diag (Surface Pro) => 10.2in width; 14 in diag (X1 yoga) => 12.2in width
+
   // SW renderer
   SDL_Surface* sdlSurface = NULL;
   if(swRender != 0) {
     vg = nvgswCreate(nvgFlags);
 #ifndef NO_THREADING
     if(numThreads == 0)
-      numThreads = numCPUCores();
+      numThreads = numCPUCores();  // * (PLATFORM_MOBILE ? 1 : 2)
     if(numThreads > 1) {
       poolInit(numThreads);
       nvgswSetThreading(vg, numThreads/2, 2, poolSubmit, poolWait);
@@ -294,8 +302,11 @@ int SDL_main(int argc, char* argv[])
       textPerformance(vg, testNum, fontsize, fontblur);
     else {
       // this is our standard performance test set
-      if (testNum % 4 == 0)
-        renderDemo(vg, mx,my, fbWidth, fbHeight, t - t0, blowup, &data);
+      if(testNum % 4 == 0) {
+        float s = DPI/192.f;
+        nvgScale(vg, s, s);
+        renderDemo(vg, mx, my, fbWidth/s, fbHeight/s, t - t0, blowup, &data);
+      }
       else if (testNum % 4 == 1)
         bigPathsTest(vg, 5, 4, fbWidth, fbHeight);
       else if (testNum % 4 == 2)
@@ -305,7 +316,8 @@ int SDL_main(int argc, char* argv[])
     }
 
     nvgResetTransform(vg);
-    nvgTranslate(vg, 0, fbHeight - 50);  // move to bottom away from status bar
+    nvgTranslate(vg, 0, fbHeight - 100);  // move to bottom away from status bar
+    nvgScale(vg, 2, 2);  // make FPS graph bigger
     if(contFPS)
       renderGraph(vg, 5,5, &fps);
 

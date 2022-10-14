@@ -102,7 +102,7 @@ enum GLNVGshaderType {
   NSVG_SHADER_FILLSOLID = 2,
   NSVG_SHADER_FILLGRAD = 3,
   NSVG_SHADER_FILLIMG = 4,
-  NSVG_SHADER_IMG = 5
+  NSVG_SHADER_TEXT = 5
 };
 
 enum GLNVGrenderMethod {
@@ -520,38 +520,6 @@ VS: for each line segment of the polygon, 1 quad = 2 triangles = 6 vertices (4 u
  and multiplied by the input RGBA color (solid color, gradient, or color from image - usually not antialiased!)
 */
 
-/* Super-sampled SDF text rendering - super-sampling gives big improvement at very small sizes; quality is
- comparable to summed text; w/ supersamping, FPS is actually slightly lower
-
-\n  float sdfCov(float D, float sdfscale)
-\n  {
-\n    // with SDF we could potentially counteract effect of linear blending by inflating char ... note that this
-\n    //  only works for SDF (not e.g. summed text) since we can have D < 0
-\n    // Also, perhaps we could use derivative info (and/or distance at pixel center) to improve?
-\n    return D > 0.0f ? clamp((D - 0.5f)/sdfscale + 0.5f, 0.0f, 1.0f) : 0.0f;  //+ 0.25f
-\n  }
-\n
-\n  float superSDF(sampler2D tex, vec2 st)
-\n  {
-\n    vec2 tex_wh = vec2(textureSize(tex, 0));  // convert from ivec2 to vec2
-\n    st = st + vec2(4.0)/tex_wh;  // account for 4 pixel padding in SDF
-\n    float s = (32.0f/255.0f)*paintMat[0][0];  // 32/255 is STBTT pixel_dist_scale
-\n    //return sdfCov(texture2D(tex, st).r, s);  // single sample
-\n    s = 0.5f*s;  // we're sampling 4 0.5x0.5 subpixels
-\n    float dx = paintMat[0][0]/tex_wh.x/4.0f;
-\n    float dy = paintMat[1][1]/tex_wh.y/4.0f;
-\n
-\n    //vec2 stextent = extent/tex_wh;  ... clamping doesn't seem to be necessary
-\n    //vec2 stmin = floor(st*stextent)*stextent;
-\n    //vec2 stmax = stmin + stextent - vec2(1.0f);
-\n    float d11 = texture2D(tex, st + vec2( dx, dy)).r;  // clamp(st + ..., stmin, stmax)
-\n    float d10 = texture2D(tex, st + vec2( dx,-dy)).r;
-\n    float d01 = texture2D(tex, st + vec2(-dx, dy)).r;
-\n    float d00 = texture2D(tex, st + vec2(-dx,-dy)).r;
-\n    return 0.25f*(sdfCov(d11, s) + sdfCov(d10, s) + sdfCov(d01, s) + sdfCov(d00, s));
-\n  }
-*/
-
 // makes editing easier, but disadvantage is that commas can only be used inside ()
 #define NVG_QUOTE(s) #s
 
@@ -578,6 +546,10 @@ static int glnvg__renderCreate(void* uptr)
   "#define USE_UNIFORMBUFFER 1\n"
 #else
   "#define UNIFORMARRAY_SIZE 11\n"
+#endif
+// append SDF text string
+#ifdef FONS_SDF
+  "#define USE_SDF_TEXT 1\n"
 #endif
   "\n";
 
@@ -798,6 +770,35 @@ static int glnvg__renderCreate(void* uptr)
 \n    return clamp(sc.x,0.0,1.0) * clamp(sc.y,0.0,1.0);
 \n  }
 \n
+\n  #ifdef USE_SDF_TEXT
+\n  // Super-sampled SDF text rendering - super-sampling gives big improvement at very small sizes; quality is
+\n  //  comparable to summed text; w/ supersamping, FPS is actually slightly lower
+\n  float sdfCov(float D, float sdfscale)
+\n  {
+\n    // Could we use derivative info (and/or distance at pixel center) to improve?
+\n    return D > 0.0f ? clamp((D - 0.5f)/sdfscale + radius, 0.0f, 1.0f) : 0.0f;  //+ 0.25f
+\n  }
+\n
+\n  float superSDF(sampler2D tex, vec2 st)
+\n  {
+\n    vec2 tex_wh = vec2(textureSize(tex, 0));  // convert from ivec2 to vec2
+\n    st = st + vec2(4.0)/tex_wh;  // account for 4 pixel padding in SDF
+\n    float s = (32.0f/255.0f)*paintMat[0][0];  // 32/255 is STBTT pixel_dist_scale
+\n    //return sdfCov(texture2D(tex, st).r, s);  // single sample
+\n    s = 0.5f*s;  // we're sampling 4 0.5x0.5 subpixels
+\n    float dx = paintMat[0][0]/tex_wh.x/4.0f;
+\n    float dy = paintMat[1][1]/tex_wh.y/4.0f;
+\n
+\n    //vec2 stextent = extent/tex_wh;  ... clamping doesn't seem to be necessary
+\n    //vec2 stmin = floor(st*stextent)*stextent;
+\n    //vec2 stmax = stmin + stextent - vec2(1.0f);
+\n    float d11 = texture2D(tex, st + vec2(dx, dy)).r;  // clamp(st + ..., stmin, stmax)
+\n    float d10 = texture2D(tex, st + vec2(dx,-dy)).r;
+\n    float d01 = texture2D(tex, st + vec2(-dx, dy)).r;
+\n    float d00 = texture2D(tex, st + vec2(-dx,-dy)).r;
+\n    return 0.25f*(sdfCov(d11, s) + sdfCov(d10, s) + sdfCov(d01, s) + sdfCov(d00, s));
+\n  }
+\n  #else
 \n  // artifacts w/ GL_LINEAR on Intel GPU and GLES doesn't support texture filtering for f32, so do it ourselves
 \n  // also, min/mag filter must be set to GL_NEAREST for float texture or texelFetch() will fail on Mali GPUs
 \n  float texFetchLerp(sampler2D texture, vec2 ij, vec2 ijmin, vec2 ijmax)
@@ -832,6 +833,7 @@ static int glnvg__renderCreate(void* uptr)
 \n    float cov = (s11 - s01 - s10 + s00)/(255.0f*4.0f*dx*dy);
 \n    return clamp(cov, 0.0f, 1.0f);
 \n  }
+\n  #endif
 \n
 \n  void main(void)
 \n  {
@@ -872,7 +874,11 @@ static int glnvg__renderCreate(void* uptr)
 \n      // Combine alpha
 \n      result = color*(scissorMask(fpos)*coverage());
 \n    } else if (type == 5) {  // Textured tris - only used for text, so no need for coverage()
-\n      float cov = scissorMask(fpos)*summedTextCov(tex, ftcoord);  //superSDF(tex, ftcoord);
+\n  #ifdef USE_SDF_TEXT
+\n      float cov = scissorMask(fpos)*superSDF(tex, ftcoord);
+\n  #else
+\n      float cov = scissorMask(fpos)*summedTextCov(tex, ftcoord);
+\n  #endif
 \n      result = vec4(cov) * innerCol;
 \n      // this is wrong - see alternative outColor calc below for correct text gamma handling
 \n      //result = innerCol*pow(vec4(cov), vec4(1.5,1.5,1.5,0.5));
@@ -1626,6 +1632,7 @@ static int glnvg__convertPaint(GLNVGcontext* gl, GLNVGcall* call, NVGpaint* pain
     }
     glnvg__xformToMat3x4(frag->paintMat, invxform);
     call->fragType = NSVG_SHADER_FILLIMG;
+    frag->radius = paint->radius + 0.5f;  // radius used for SDF text weight
 
 #if NANOVG_GL_USE_UNIFORMBUFFER
     if (tex->type == NVG_TEXTURE_RGBA)
@@ -1757,7 +1764,7 @@ static void glnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOper
   if (call->uniformOffset == -1) goto error;
   //frag = nvg__fragUniformPtr(gl, call->uniformOffset);
   glnvg__convertPaint(gl, call, paint, scissor, 0); //, 1.0f, 1.0f, -1.0f);
-  call->fragType = NSVG_SHADER_IMG;
+  call->fragType = NSVG_SHADER_TEXT;
   return;
 error:
   if (gl->ncalls > 0) gl->ncalls--;  // skip call if allocation error

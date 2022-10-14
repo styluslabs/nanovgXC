@@ -8,7 +8,7 @@ extern "C" {
 int numCPUCores();
 void poolInit(int nthreads);
 void poolSubmit(void (*fn)(void*), void* arg);
-void poolWait();
+void poolWait(void);
 
 #ifdef __cplusplus
 }

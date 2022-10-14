@@ -20,7 +20,7 @@ void poolSubmit(void (*fn)(void*), void* arg)
   futures.push_back(threadPool->enqueue(fn, arg));  //[fn, arg](){ fn(arg); }));
 }
 
-void poolWait()
+void poolWait(void)
 {
   for(auto& future : futures)
     future.wait();

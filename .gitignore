@@ -5,7 +5,7 @@
 *.exe
 *.o
 *.so
-test
+*.lib
 
 ## Logs and databases #
 *.log
@@ -22,16 +22,16 @@ ehthumbs.db
 Thumbs.db
 
 ## Build dir
-build/*
-Debug/*
-Release/*
-android/*
+**/Debug
+**/Release
+android/
 
 ## IDE specific
 *xcuserdata*
 .vs/
 *.pdb
 *.creator.user
+*.gcov
 
 ## Misc
 Makefile.local

@@ -127,6 +127,8 @@ typedef struct SWNVGthreadCtx {
 
   unsigned char* scanline;
   int cscanline;
+
+  int* lineLimits;
 } SWNVGthreadCtx;
 
 struct SWNVGcontext {
@@ -698,12 +700,14 @@ static float superSDF(SWNVGtexture* tex, float s, float dr, float ijx, float ijy
 {
   // check distance from center of nearest pixel and exit early if large enough
   // doesn't help at all for very small font sizes, but >50% for larger sizes
-  float d = texFetch(tex, (int)(ijx + 0.5f), (int)(ijy + 0.5f));
+  int ij0x = swnvg__clampi((int)(ijx + 0.5f), ijminx, ijmaxx);
+  int ij0y = swnvg__clampi((int)(ijy + 0.5f), ijminy, ijmaxy);
+  float d = texFetch(tex, ij0x, ij0y);
   float sd = (d - 255.0f*0.5f)/s + (dr - 0.5f);  // note we're still using the half pixel scale here
   if(sd < -1.415f) return 0;  // sqrt(2) ... verified experimentally
   if(sd > 1.415f) return 1.0f;
 
-  //return sdfCov(texFetchLerp(tex, ijx, ijy, ijminx, ijminy, ijmaxx, ijmaxy), 2*s);
+  //return sdfCov(texFetchLerp(tex, ijx, ijy, ijminx, ijminy, ijmaxx, ijmaxy), 2*s);  // single sample
   float d11 = texFetchLerp(tex, ijx + dx, ijy + dy, ijminx, ijminy, ijmaxx, ijmaxy);
   float d10 = texFetchLerp(tex, ijx - dx, ijy + dy, ijminx, ijminy, ijmaxx, ijmaxy);
   float d01 = texFetchLerp(tex, ijx + dx, ijy - dy, ijminx, ijminy, ijmaxx, ijmaxy);
@@ -734,6 +738,8 @@ static void swnvg__rasterizeQuad(SWNVGthreadCtx* r, SWNVGcall* call, SWNVGtextur
 
   int extentx = (int)call->extent[0], extenty = (int)call->extent[1];
   // use texcoord center to figure out which atlas rect we are reading from
+  //int ijminx = ((int)(0.5f*(v00->x1 + v11->x1)*tex->width/extentx + 0.5f))*extentx;
+  //int ijminy = ((int)(0.5f*(v00->y1 + v11->y1)*tex->height/extenty + 0.5f))*extenty;
   int ijminx = ((int)(s00/extentx + 0.5f))*extentx, ijminy = ((int)(t00/extenty + 0.5f))*extenty;
   int ijmaxx = ijminx + extentx - 1, ijmaxy = ijminy + extenty - 1;
   if(ijminx < 0 || ijminy < 0) return;  // something went wrong
@@ -976,6 +982,8 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
     float xmax = swnvg__maxf(xt, xb);
     int ixleft = swnvg__maxi(swnvg__minf(edge->x0, edge->x1), xb0);
     int ixright = swnvg__mini(swnvg__maxf(edge->x0, edge->x1), xb1);
+    // scanline x limits for this call
+    int* lims = &r->lineLimits[2*(iymin - r->y0)];
 
     for(iy = iymin; iy <= iymax; ++iy) {
       int ixmin = swnvg__maxi((int)xmin, ixleft);
@@ -990,20 +998,30 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
       // coverage for remaining pixels
       if(ix <= xedge)
         *dst += dir*(swnvg__minf(ymax, iy+1) - swnvg__maxf(ymin, iy)) - cov;
+      // scanline x limits
+      if(ixmin < lims[0])
+        lims[0] = ixmin;
+      if(ixmax >= lims[1])
+        lims[1] = ixmax+1;
+      lims += 2;
       xmin += invslope;
       xmax += invslope;
     }
   }
 
   // fill
-  int count = xb1 - xb0 + 1;
+  int* lims = &r->lineLimits[2*(yb0 - r->y0)];
   int linear = call->flags & NVG_SRGB ? 1 : 0;
   rgba32_t c = call->innerCol;
   for(iy = yb0; iy <= yb1; ++iy) {
-    unsigned char* dst = &gl->bitmap[iy*gl->stride + xb0*4];
-    float* dcover = &gl->covtex[iy*gl->width + xb0];
     float cover = 0;
     int icover = 0;
+    int count = swnvg__mini(lims[1], xb1) - lims[0] + 1;
+    unsigned char* dst = &gl->bitmap[iy*gl->stride + lims[0]*4];
+    float* dcover = &gl->covtex[iy*gl->width + lims[0]];
+    lims[0] = gl->width; lims[1] = 0;  // reset limits for this scanline
+    lims += 2;
+
     if (call->type == SWNVG_PAINT_COLOR) {
       // handle solid color directly for better performance
       if(RGBA32_IS_OPAQUE(c)) {
@@ -1153,6 +1171,17 @@ static void swnvg__rasterize(void* arg)
   int i, j;
   SWNVGthreadCtx* r = (SWNVGthreadCtx*)arg;
   SWNVGcontext* gl = r->context;
+  // setup - lineLimits array for XC rendering
+  if(gl->covtex && !r->lineLimits) {
+    int k, nlims = 2*(r->y1 - r->y0 + 1);
+    r->lineLimits = (int*)malloc(nlims*sizeof(int));
+    if (!r->lineLimits) return;
+    for(k = 0; k < nlims; k += 2) {
+      r->lineLimits[k] = gl->width;
+      r->lineLimits[k+1] = 0;
+    }
+  }
+  // render
   for (i = 0; i < gl->ncalls; i++) {
     SWNVGcall* call = &gl->calls[i];
     if(call->bounds[0] <= r->x1 && call->bounds[1] <= r->y1 && call->bounds[2] >= r->x0 && call->bounds[3] >= r->y0) {
@@ -1386,7 +1415,9 @@ static void swnvg__renderDelete(void* uptr)
       p = next;
     }
     free(gl->threads[ii].scanline);
+    free(gl->threads[ii].lineLimits);
   }
+  free(gl->threads);
   free(gl->covtex);
   free(gl->textures);
   free(gl->verts);
@@ -1442,8 +1473,8 @@ void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads, poolSubmit_t 
 {
   SWNVGcontext* gl = (SWNVGcontext*)nvgInternalParams(vg)->userPtr;
   int i, nthreads = xthreads*ythreads;
-  if (nthreads < 2) return;
-  gl->threads = (SWNVGthreadCtx*)malloc(sizeof(SWNVGthreadCtx) * nthreads);
+  if (nthreads < 2 || gl->bitmap) return;  // can't call this fn after setFramebuffer
+  gl->threads = (SWNVGthreadCtx*)realloc(gl->threads, sizeof(SWNVGthreadCtx) * nthreads);
   if (gl->threads == NULL) return;
   memset(gl->threads, 0, sizeof(SWNVGthreadCtx) * nthreads);
   for (i = 0; i < nthreads; ++i) {
@@ -1482,6 +1513,11 @@ void nvgswSetFramebuffer(NVGcontext* vg, void* dest, int w, int h, int rshift, i
         r->scanline = (unsigned char*)realloc(r->scanline, r->cscanline);
         if (r->scanline == NULL) return;
         memset(r->scanline, 0, r->cscanline);
+      }
+      // reset lineLimits whenever covtex is reset (whenever FB dimensions change)
+      if(r->lineLimits && !gl->covtex) {
+        free(r->lineLimits);
+        r->lineLimits = NULL;
       }
     }
   }

@@ -522,6 +522,8 @@ static void textPerformance(NVGcontext* vg, int testNum, float fontsize, float f
 
   for(int y = 20; y < 2200; y += fontsize - 4)
     nvgText(vg, 250, y, longstr, NULL);
+  // reset blur
+  nvgFontBlur(vg, 0);
 }
 
 static void textTests(NVGcontext* vg)
@@ -737,6 +739,7 @@ XC 8 threads, big/small/tiger/Opt_page1/paris-30k: 12/50/50/90/8.5
 non-XC:  25/27/32/61/92/7.6  (less than above due to other tasks?)
 XC:      52/20/42/47/94/7.7
 diff-XC: 55/26/43/60/106/8.0
+lim-XC:  53/26/43/78/106/9.3  (diff-XC with per-scanline x limits)
 
 1 thread, Linux VM, no sRGB, big/small/tiger/text:
 non-XC: 4.9/6.7/8.3/6.4

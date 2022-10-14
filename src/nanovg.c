@@ -10,7 +10,9 @@
 
 #include "nanovg.h"
 #define FONTSTASH_IMPLEMENTATION
-#define FONS_SUMMED  //FONS_SDF  //
+#ifndef FONS_SDF
+#define FONS_SUMMED
+#endif
 #include "fontstash.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -2288,7 +2290,16 @@ static float nvg__textFromAtlas(NVGcontext* ctx, float x, float y, const char* s
   FONSquad q;
   NVGvertex* verts;
   float* tf = state->xform;
-  float sx, sy, qsqx, qtqy;
+#ifdef FONS_SDF
+  float expand = state->fontBlur > 0 ? 0.5f + state->fontBlur : 0.5f;
+#else
+  float expand = 0.5f;
+#endif
+  float sx = nvg__sqrtf(tf[0]*tf[0] + tf[2]*tf[2]);
+  float sy = nvg__sqrtf(tf[1]*tf[1] + tf[3]*tf[3]);
+  float dx = expand/sx;
+  float dy = expand/sy;
+  float qsqx, qtqy;
   int cverts = 0;
   int nverts = 0;
   // flag to reverse order of triangle vertices to ensure CCW winding (front face)
@@ -2320,12 +2331,10 @@ static float nvg__textFromAtlas(NVGcontext* ctx, float x, float y, const char* s
     }
     prevIter = iter;
     // expand by half pixel - note that we must expand texture coords to match expansion of quad
-    sx = nvg__sqrtf(tf[0]*tf[0] + tf[2]*tf[2]);
-    sy = nvg__sqrtf(tf[1]*tf[1] + tf[3]*tf[3]);
     qsqx = (q.s1 - q.s0)/(q.x1 - q.x0);
     qtqy = (q.t1 - q.t0)/(q.y1 - q.y0);
-    q.s0 -= qsqx*0.5f/sx; q.s1 += qsqx*0.5f/sx; q.t0 -= qtqy*0.5f/sy; q.t1 += qtqy*0.5f/sy;
-    q.x0 -= 0.5f/sx; q.x1 += 0.5f/sx; q.y0 -= 0.5f/sy; q.y1 += 0.5f/sy;
+    q.s0 -= qsqx*dx; q.s1 += qsqx*dx; q.t0 -= qtqy*dy; q.t1 += qtqy*dy;
+    q.x0 -= dx; q.x1 += dx; q.y0 -= dy; q.y1 += dy;
     // Transform corners.
     nvgTransformPoint(&c[0],&c[1], tf, q.x0, q.y0);
     nvgTransformPoint(&c[2],&c[3], tf, q.x1, q.y0);

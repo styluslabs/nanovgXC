@@ -673,6 +673,7 @@ float fonsEmSizeToSize(FONScontext* stash, float emsize)
   FONSfont* font;
   if(state->font < 0 || state->font >= stash->nfonts) return 0;
   font = stash->fonts[state->font];
+  if(font->data == NULL) return 0;
   return fons__tt_getEmToPixelsScale(&font->font, emsize)/fons__tt_getPixelHeightScale(&font->font, 1.0f);
 }
 
@@ -818,7 +819,7 @@ static int fons__loadFont(FONScontext* stash, int idx)
     font->freeData = 1;
   }
 
-  if (!fons__tt_loadFont(stash, &font->font, font->data, font->dataSize)) goto error;
+  if (!font->data || !fons__tt_loadFont(stash, &font->font, font->data, font->dataSize)) goto error;
 
   font->glyphs = (FONSglyph*)malloc(sizeof(FONSglyph) * FONS_INIT_GLYPHS);
   if (font->glyphs == NULL) goto error;

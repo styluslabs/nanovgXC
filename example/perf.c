@@ -107,7 +107,7 @@ void renderGraph(NVGcontext* vg, float x, float y, PerfGraph* fps)
 
   nvgBeginPath(vg);
   nvgRect(vg, x,y, w,h);
-  nvgFillColor(vg, nvgRGBA(0,0,0,128));
+  nvgFillColor(vg, nvgRGBA(0,0,0,192));
   nvgFill(vg);
 
   nvgBeginPath(vg);

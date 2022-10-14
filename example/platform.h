@@ -10,6 +10,7 @@
 #include <OpenGLES/ES3/glext.h>
 
 #define DATA_PATH(x) (x)
+#define PLATFORM_MOBILE 1
 
 #elif defined(__ANDROID__)
 
@@ -18,6 +19,7 @@
 
 // hack to load system fonts
 #define DATA_PATH(x) ("/system/" x)
+#define PLATFORM_MOBILE 1
 
 #include <android/log.h>
 #define NVG_LOG(...) __android_log_print(ANDROID_LOG_VERBOSE, "nanovg-2 demo",  __VA_ARGS__)
@@ -29,6 +31,7 @@
 #include "glad.h"
 
 #define DATA_PATH(x) ("example/" x)
+#define PLATFORM_MOBILE 0
 #endif
 
 //#ifdef _MSC_VER
