@@ -28,7 +28,10 @@
 #define NVGSWU_GLES3
 
 #include "nanovg.h"
-#include "nanovg_gl.h"
+
+//#include "nanovg_gl.h"
+#include "nanovg_vtex.h"
+
 #include "nanovg_gl_utils.h"
 #include "nanovg_sw.h"
 #include "nanovg_sw_utils.h"
@@ -48,8 +51,8 @@
 
 int SDL_main(int argc, char* argv[])
 {
-  DemoData data;
-  PerfGraph fps;
+  DemoData demoData;
+  PerfGraph fpsGraph, gpuGraph, cpuGraph;
   SDL_Window* sdlWindow = NULL;
   SDL_GLContext sdlContext = NULL;
   NVGcontext* vg = NULL;
@@ -69,6 +72,7 @@ int SDL_main(int argc, char* argv[])
   int dirty = 1;
   int contFPS = 1;
   int useFramebuffer = 0;
+  int showCpuGraph = 0;
   int numThreads = 0;
   int testSet = 0;
   float shiftx = 0;
@@ -112,23 +116,24 @@ int SDL_main(int argc, char* argv[])
   SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
   //SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
 
-  initGraph(&fps, GRAPH_RENDER_FPS, "Frame Time");
-
-  int nvgFlags = NVG_SRGB;  //NVG_NO_FB_FETCH); //NVG_DEBUG); // | NVG_AUTOW_DEFAULT);
+  int nvgFlags = NVG_SRGB;  //NVG_NO_FB_FETCH  NVG_AUTOW_DEFAULT  NVGSW_PATHS_XC
+#ifndef NDEBUG
+  nvgFlags |= NVG_DEBUG;
+#endif
   for(int argi = 1; argi < argc; ++argi) {
     if(strcmp(argv[argi], "--flags") == 0 && ++argi < argc)
-      nvgFlags = atoi(argv[argi]);
-    if(strcmp(argv[argi], "--orflags") == 0 && ++argi < argc)
-      nvgFlags |= atoi(argv[argi]);
-    if(strcmp(argv[argi], "--sw") == 0 && ++argi < argc)
+      nvgFlags = strtoul(argv[argi], 0, 0);  // support hex
+    else if(strcmp(argv[argi], "--orflags") == 0 && ++argi < argc)
+      nvgFlags |= strtoul(argv[argi], 0, 0);
+    else if(strcmp(argv[argi], "--sw") == 0 && ++argi < argc)
       swRender = atoi(argv[argi]);
-    if(strcmp(argv[argi], "--fps") == 0 && ++argi < argc)
+    else if(strcmp(argv[argi], "--fps") == 0 && ++argi < argc)
       contFPS = atoi(argv[argi]);
-    if(strcmp(argv[argi], "--threads") == 0 && ++argi < argc)
+    else if(strcmp(argv[argi], "--threads") == 0 && ++argi < argc)
       numThreads = atoi(argv[argi]);
-    if(strcmp(argv[argi], "--test") == 0 && ++argi < argc)
+    else if(strcmp(argv[argi], "--test") == 0 && ++argi < argc)
       testSet = atoi(argv[argi]);
-    if(strcmp(argv[argi], "--svg") == 0 && ++argi < argc) {
+    else if(strcmp(argv[argi], "--svg") == 0 && ++argi < argc) {
       svgFile = argv[argi];
       testNum = 3;  // if svg file specified, show it immediately
     }
@@ -147,10 +152,11 @@ int SDL_main(int argc, char* argv[])
   double countToSec = 1.0/SDL_GetPerformanceFrequency();
 
   // estimate DPI
-  SDL_Rect r;
+  SDL_Rect dispBounds;
   int disp = SDL_GetWindowDisplayIndex(sdlWindow);
-  SDL_GetDisplayBounds(disp < 0 ? 0 : disp, &r);
-  float DPI = (r.h > r.w ? r.h : r.w)/11.2f;  // 12.3in diag (Surface Pro) => 10.2in width; 14 in diag (X1 yoga) => 12.2in width
+  SDL_GetDisplayBounds(disp < 0 ? 0 : disp, &dispBounds);
+  // 12.3in diag (Surface Pro) => 10.2in width; 14 in diag (X1 yoga) => 12.2in width
+  float DPI = (dispBounds.h > dispBounds.w ? dispBounds.h : dispBounds.w)/11.2f;
 
   // SW renderer
   SDL_Surface* sdlSurface = NULL;
@@ -160,8 +166,9 @@ int SDL_main(int argc, char* argv[])
     if(numThreads == 0)
       numThreads = numCPUCores();  // * (PLATFORM_MOBILE ? 1 : 2)
     if(numThreads > 1) {
+      int xthreads = dispBounds.h > dispBounds.w ? 2 : numThreads/2;  // prefer square-like tiles
       poolInit(numThreads);
-      nvgswSetThreading(vg, numThreads/2, 2, poolSubmit, poolWait);
+      nvgswSetThreading(vg, xthreads, numThreads/xthreads, poolSubmit, poolWait);
     }
 #endif
     if(swRender == 1) {
@@ -207,9 +214,25 @@ int SDL_main(int argc, char* argv[])
 #endif
   }
 
+  // Android: copy assets out of APK
+#if 0 //defined __ANDROID__
+  const char* assets[] = {"svg/tiger.svg" };
+
+  for(int ii = 0; ii < sizeof(assets)/sizeof(assets[0]); ++ii) {
+    SDL_RWops *io = SDL_RWFromFile(assets[ii], "rb");
+    if (io != NULL) {
+        char name[256];
+        if (SDL_RWread(io, name, sizeof (name), 1) > 0) {
+            printf("Hello, %s!\n", name);
+        }
+        SDL_RWclose(io);
+    }
+  }
+#endif
+
   int imgflags = (fbFlags & NVG_IMAGE_SRGB);  // | NVG_IMAGE_NEAREST;
-  if (loadDemoData(vg, &data, imgflags) == -1)
-    printf("Error loading demo data in ../example/: please run from build directory.\n");  //return -1;
+  if (loadDemoData(vg, &demoData, imgflags) == -1)
+    NVG_LOG("Error loading demo data in ../example/: please run from build directory.\n");  //return -1;
 
   int img1 = nvgCreateImage(vg, DATA_PATH("dither.png"), imgflags);
 
@@ -217,6 +240,11 @@ int SDL_main(int argc, char* argv[])
   //nvgCreateFont(vg, "mono", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf");
   //nvgCreateFont(vg, "fallback", "../../../temp/DroidSansFallbackFull.ttf");
   nvgAtlasTextThreshold(vg, 48.0f);  // initialize atlas
+
+  GPUtimer gpuTimer;
+  if(!swRender)
+    initGPUTimer(&gpuTimer);
+  gpuTimer.supported = 0;  // disable GPU graph initially
 
   double t0 = SDL_GetPerformanceCounter()*countToSec;
   prevt = t0;
@@ -230,11 +258,19 @@ int SDL_main(int argc, char* argv[])
     float pxRatio;
     int prevFBO;
 
+    if(dirty) {
+      initGraph(&fpsGraph, GRAPH_RENDER_FPS, "Frame Time");
+      initGraph(&gpuGraph, GRAPH_RENDER_MS, "GPU Time");
+      initGraph(&cpuGraph, GRAPH_RENDER_MS, "CPU Time");
+    }
+
     t = SDL_GetPerformanceCounter()*countToSec;
     dt = t - prevt;
     prevt = t;
-    updateGraph(&fps, dt);
+    updateGraph(&fpsGraph, dt);
     //NVG_LOG("Frame time: %f ms; CPU time before nvgEndFrame: %f ms\n", dt*1000, cpudt*1000);
+    if(gpuTimer.supported)
+      startGPUTimer(&gpuTimer);
 
     SDL_GetMouseState(&mx, &my);
     SDL_GetWindowSize(sdlWindow, &winWidth, &winHeight);
@@ -276,6 +312,8 @@ int SDL_main(int argc, char* argv[])
     // if we want to use win dimensions (i.e. physical units) instead of framebuffer dimensions (pixels), so
     //  that nanovg handles all the DPI scaling, we'll need to address the use of gl_FragCoord, which is
     //  always in pixels of course
+    // if(dirty || !reuseFrame) -- reusing frame doesn't seem to increase FPS - as long as CPU time is less
+    //  than GPU time, I guess they are just parallelized?
     nvgBeginFrame(vg, fbWidth, fbHeight, pxRatio);
 
     nvgScale(vg, scale, scale);
@@ -296,20 +334,35 @@ int SDL_main(int argc, char* argv[])
     //fillRect(vg, 250, 250, 200, 200, nvgRGBA(0,0,255,128));
 
     //textTest2(vg, testNum);
-    if(testSet == 2)
-      bigPathsTest(vg, 1, 1, fbWidth, fbHeight);
-    else if(testSet == 1)
+    if(testSet % 3 == 2) {
+      nvgShapeAntiAlias(vg, 0);
+      bigPathsTest(vg, 20, 20, fbWidth, fbHeight);
+      nvgShapeAntiAlias(vg, 1);
+      //nvgFillColor(vg, nvgRGBA(0, 0, 255, 128));
+      //nvgScissor(vg, 100, 100, 200, 200);
+      //NVGpaint paint = nvgLinearGradient(vg, 50, 50, 50, 1200, nvgRGBA(255, 0, 0, 255), nvgRGBA(0, 0, 255, 255));
+      //NVGpaint paint = nvgImagePattern(vg, 100, 100, 200, 200, 0.0f, demoData.images[0], 1.0f);
+      //nvgTranslate(vg, 500, 500);
+      //nvgBeginPath(vg);
+      //nvgRect(vg, 50, 50, 600, 1200);
+      //nvgFillPaint(vg, paint);
+      //nvgFill(vg);
+      //nvgResetScissor(vg);
+    }
+    else if(testSet % 3 == 1)
       textPerformance(vg, testNum, fontsize, fontblur);
     else {
       // this is our standard performance test set
       if(testNum % 4 == 0) {
+        if (swRender == 0)
+          nvgluClear(nvgRGBAf(0.3f, 0.3f, 0.3f, 0.0f));
         float s = DPI/192.f;
         nvgScale(vg, s, s);
-        renderDemo(vg, mx, my, fbWidth/s, fbHeight/s, t - t0, blowup, &data);
+        renderDemo(vg, mx, my, fbWidth/s, fbHeight/s, t - t0, blowup, &demoData);
       }
-      else if (testNum % 4 == 1)
+      else if(testNum % 4 == 1)
         bigPathsTest(vg, 5, 4, fbWidth, fbHeight);
-      else if (testNum % 4 == 2)
+      else if(testNum % 4 == 2)
         smallPathsTest(vg, fbWidth, fbHeight);
       else
         svgTest(vg, svgFile, fbWidth, fbHeight);
@@ -318,14 +371,26 @@ int SDL_main(int argc, char* argv[])
     nvgResetTransform(vg);
     nvgTranslate(vg, 0, fbHeight - 100);  // move to bottom away from status bar
     nvgScale(vg, 2, 2);  // make FPS graph bigger
-    if(contFPS)
-      renderGraph(vg, 5,5, &fps);
+    if(contFPS) {
+      renderGraph(vg, 5, 5, &fpsGraph);
+      if(gpuTimer.supported)
+        renderGraph(vg, 5+200+5, 5, &gpuGraph);
+      if(showCpuGraph)
+        renderGraph(vg, 5+200+5+200+5, 5, &cpuGraph);
+    }
 
     cpudt = SDL_GetPerformanceCounter()*countToSec - prevt;
-    //glEnable(GL_SCISSOR_TEST);
-    //glScissor(0, 0, 400, 200);  //fbHeight - 200, 400, 200);
+    updateGraph(&cpuGraph, cpudt);
+
+    //glEnable(GL_SCISSOR_TEST);  //glScissor(0, 0, 400, 200);  //glDisable(GL_SCISSOR_TEST);
     nvgEndFrame(vg);
-    //glDisable(GL_SCISSOR_TEST);
+
+    if(gpuTimer.supported) {
+      float gpuTimes[3];
+      int n = stopGPUTimer(&gpuTimer, gpuTimes, 3);
+      for (int i = 0; i < n; i++)
+        updateGraph(&gpuGraph, gpuTimes[i]);
+    }
 
 #ifdef NVG_GL
     if (useFramebuffer)
@@ -366,9 +431,13 @@ int SDL_main(int argc, char* argv[])
         else if (key == SDLK_p)
           premult = !premult;
         else if (key == SDLK_t) {
-          ++testNum;
-          initGraph(&fps, GRAPH_RENDER_FPS, "Frame Time");  // reset FPS graph
+          if(event.key.keysym.mod & KMOD_SHIFT) ++testSet;
+          else ++testNum;
         }
+        else if (key == SDLK_g)
+          gpuTimer.supported = !gpuTimer.supported && !swRender;
+        else if (key == SDLK_c)
+          showCpuGraph = !showCpuGraph;
         else if (key == SDLK_LEFTBRACKET)
           radians += step;
         else if (key == SDLK_RIGHTBRACKET)
@@ -407,15 +476,22 @@ int SDL_main(int argc, char* argv[])
         }
         else
           continue;
+#if PLATFORM_MOBILE
+        if(SDL_IsTextInputActive())
+          SDL_StopTextInput();
+#endif
       }
       else if(event.type == SDL_WINDOWEVENT) {
         if(event.window.event != SDL_WINDOWEVENT_EXPOSED && event.window.event != SDL_WINDOWEVENT_MOVED
             && event.window.event != SDL_WINDOWEVENT_RESIZED)
           continue;
       }
-      else if(event.type == SDL_FINGERDOWN) { // || event.type == SDL_MOUSEBUTTONDOWN)
-        ++testNum;
-        initGraph(&fps, GRAPH_RENDER_FPS, "Frame Time");
+      else if(event.type == SDL_FINGERDOWN) {// || event.type == SDL_MOUSEBUTTONDOWN)
+#if PLATFORM_MOBILE
+        if(!SDL_IsTextInputActive())
+          SDL_StartTextInput();
+#endif
+        //++testNum;
       }
       else
         continue;
@@ -424,7 +500,7 @@ int SDL_main(int argc, char* argv[])
 
   } // end while(run)
 
-  freeDemoData(vg, &data);
+  freeDemoData(vg, &demoData);
 #ifdef NVG_GL
   if(useFramebuffer)
     nvgluDeleteFramebuffer(nvgFB);

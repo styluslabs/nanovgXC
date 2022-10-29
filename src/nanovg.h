@@ -586,10 +586,10 @@ void nvgTextLineHeight(NVGcontext* ctx, float lineHeight);
 void nvgTextAlign(NVGcontext* ctx, int align);
 
 // Sets the font face based on specified id of current text style.
-void nvgFontFaceId(NVGcontext* ctx, int font);
+int nvgFontFaceId(NVGcontext* ctx, int font);
 
 // Sets the font face based on specified name of current text style.
-void nvgFontFace(NVGcontext* ctx, const char* font);
+int nvgFontFace(NVGcontext* ctx, const char* font);
 
 // Sets the maximum font size (in pixels) that will be drawn using font atlas; text above this size is drawn
 //  as paths; initial value is 0 (i.e., all text is drawn as paths)
@@ -665,7 +665,7 @@ struct NVGscissor {
 typedef struct NVGscissor NVGscissor;
 
 struct NVGvertex {
-  float x0,y0,x1,y1,u,v;
+  float x0,y0,x1,y1;  //,u,v;
 };
 typedef struct NVGvertex NVGvertex;
 
@@ -675,6 +675,7 @@ struct NVGpath {
   unsigned char closed;
   unsigned char winding;
   unsigned char convex;
+  unsigned char restart;
   NVGvertex* fill;
   int nfill;
   float bounds[4];  // xmin, ymin, xmax, ymax

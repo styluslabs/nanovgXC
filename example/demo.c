@@ -803,7 +803,7 @@ int loadDemoData(NVGcontext* vg, DemoData* data, int imgflags)
 
   data->fontNormal = nvgCreateFont(vg, "sans", DATA_PATH("fonts/Roboto-Regular.ttf"));
   if (data->fontNormal == -1) {
-    printf("Could not add font italic.\n");
+    printf("Could not add font regular.\n");
     return -1;
   }
   data->fontBold = nvgCreateFont(vg, "sans-bold", DATA_PATH("fonts/Roboto-Bold.ttf"));

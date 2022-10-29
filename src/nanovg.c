@@ -43,8 +43,9 @@ enum NVGcommands {
   NVG_MOVETO = 0,
   NVG_LINETO = 1,
   NVG_BEZIERTO = 2,
-  NVG_CLOSE = 3,
+  NVG_CLOSE = 3,  // commands >= NVG_CLOSE do not affect position
   NVG_WINDING = 4,
+  NVG_RESTART = 5,
 };
 
 struct NVGstate {
@@ -107,10 +108,6 @@ struct NVGcontext {
   struct FONScontext* fs;
   int fontImages[NVG_MAX_FONTIMAGES];
   int fontImageIdx;
-  int drawCallCount;
-  int fillTriCount;
-  int strokeTriCount;
-  int textTriCount;
 };
 
 static float nvg__sqrtf(float a) { return sqrtf(a); }
@@ -329,11 +326,6 @@ void nvgBeginFrame(NVGcontext* ctx, float windowWidth, float windowHeight, float
   nvg__setDevicePixelRatio(ctx, devicePixelRatio);
 
   ctx->params.renderViewport(ctx->params.userPtr, windowWidth, windowHeight, devicePixelRatio);
-
-  ctx->drawCallCount = 0;
-  ctx->fillTriCount = 0;
-  ctx->strokeTriCount = 0;
-  ctx->textTriCount = 0;
 }
 
 void nvgCancelFrame(NVGcontext* ctx)
@@ -1038,7 +1030,7 @@ static void nvg__appendCommands(NVGcontext* ctx, float* vals, int nvals)
     ctx->ccommands = ccommands;
   }
 
-  if ((int)vals[0] != NVG_CLOSE && (int)vals[0] != NVG_WINDING) {
+  if ((int)vals[0] < NVG_CLOSE) {
     ctx->commandx = vals[nvals-2];
     ctx->commandy = vals[nvals-1];
   }
@@ -1068,7 +1060,7 @@ static void nvg__appendCommands(NVGcontext* ctx, float* vals, int nvals)
     case NVG_WINDING:
       i += 2;
       break;
-    default:
+    default:  // NVG_RESTART
       i++;
     }
   }
@@ -1150,20 +1142,6 @@ static void nvg__addPoint(NVGcontext* ctx, float x, float y) //, int flags)
   path->count++;
 }
 
-static void nvg__closePath(NVGcontext* ctx)
-{
-  NVGpath* path = nvg__lastPath(ctx);
-  if (path == NULL) return;
-  path->closed = 1;
-}
-
-static void nvg__pathWinding(NVGcontext* ctx, int winding)
-{
-  NVGpath* path = nvg__lastPath(ctx);
-  if (path == NULL) return;
-  path->winding = winding;
-}
-
 static float nvg__getAverageScale(float *t)
 {
   float sx = nvg__sqrtf(t[0]*t[0] + t[2]*t[2]);
@@ -1226,8 +1204,8 @@ static void nvg__vset2(NVGvertex* vtx, float x0, float y0, float x1, float y1, f
   vtx->y0 = y0;
   vtx->x1 = x1;
   vtx->y1 = y1;
-  vtx->u = u;
-  vtx->v = v;
+  //vtx->u = u;
+  //vtx->v = v;
 }
 
 static void nvg__vset(NVGvertex* vtx, float x, float y, float u, float v)
@@ -1320,12 +1298,22 @@ static void nvg__flattenPaths(NVGcontext* ctx)
       i += 7;
       break;
     case NVG_CLOSE:
-      nvg__closePath(ctx);
+      path = nvg__lastPath(ctx);
+      if (path)
+        path->closed = 1;
       i++;
       break;
     case NVG_WINDING:
-      nvg__pathWinding(ctx, (int)ctx->commands[i+1]);
+      path = nvg__lastPath(ctx);
+      if (path)
+        path->winding = (unsigned char)ctx->commands[i+1];
       i += 2;
+      break;
+    case NVG_RESTART:
+      path = nvg__lastPath(ctx);
+      if (path)
+        path->restart = 1;
+      i++;
       break;
     default:
       i++;
@@ -1687,7 +1675,7 @@ static int nvg__expandFill(NVGcontext* ctx)  //, float w, int lineJoin, float mi
     csegs += path->count;
   }
 
-  verts = nvg__allocTempVerts(ctx, 6*csegs);
+  verts = nvg__allocTempVerts(ctx, csegs);
   if (verts == NULL) return 0;
 
   // if path is explicitly closed, nvg__flattenPaths removes last point and sets path->closed - so for fill
@@ -1971,7 +1959,6 @@ void nvgFill(NVGcontext* ctx)
 {
   NVGstate* state = nvg__getState(ctx);
   NVGpaint fillPaint = state->fill;
-  int i;
   int flags = (state->shapeAntiAlias ? 0 : NVG_PATH_NO_AA) | (state->fillRule == NVG_NONZERO ? 0 : NVG_PATH_EVENODD);
 
   // Apply global alpha
@@ -1987,13 +1974,6 @@ void nvgFill(NVGcontext* ctx)
 
   // clear convex flag so it isn't erroneously applied to a subsequent stroke
   if(ctx->cache->npaths == 1) ctx->cache->paths[0].convex = 0;
-
-  // Count triangles
-  for (i = 0; i < ctx->cache->npaths; i++) {
-    const NVGpath* path = &ctx->cache->paths[i];
-    ctx->fillTriCount += path->nfill/3;
-    ctx->drawCallCount += 2;
-  }
 }
 
 void nvgStroke(NVGcontext* ctx)
@@ -2035,13 +2015,6 @@ void nvgStroke(NVGcontext* ctx)
   cache->npaths = npaths0;
   cache->npoints = npoints0;
   cache->paths = paths0;
-
-  // Count triangles
-  for (i = 0; i < ctx->cache->npaths; i++) {
-    const NVGpath* path = &cache->paths[i];
-    ctx->strokeTriCount += path->nfill/3; //path->nstroke-2;
-    ctx->drawCallCount++;
-  }
 }
 
 // Add fonts
@@ -2111,16 +2084,19 @@ void nvgTextAlign(NVGcontext* ctx, int align)
   state->textAlign = align;
 }
 
-void nvgFontFaceId(NVGcontext* ctx, int font)
+int nvgFontFaceId(NVGcontext* ctx, int font)
 {
   NVGstate* state = nvg__getState(ctx);
+  // previously fonsSetFont() wasn't called until nvgText(), but we now do it here due to delayed font loading
+  if(fonsSetFont(ctx->fs, font) == FONS_INVALID)
+    return -1;
   state->fontId = font;
+  return 0;
 }
 
-void nvgFontFace(NVGcontext* ctx, const char* font)
+int nvgFontFace(NVGcontext* ctx, const char* font)
 {
-  NVGstate* state = nvg__getState(ctx);
-  state->fontId = fonsGetFontByName(ctx->fs, font);
+  return nvgFontFaceId(ctx, fonsGetFontByName(ctx->fs, font));
 }
 
 void nvgAtlasTextThreshold(NVGcontext* ctx, float px)
@@ -2225,8 +2201,6 @@ static void nvg__renderText(NVGcontext* ctx, NVGvertex* verts, int nverts)
   //paint.feather = ctx->sRGBTextAdj ? 1 : 0;
   paint.radius = state->fontBlur;
   ctx->params.renderTriangles(ctx->params.userPtr, &paint, state->compositeOperation, &state->scissor, verts, nverts);
-  ctx->drawCallCount++;
-  ctx->textTriCount += nverts/3;
 }
 
 static void nvg__fonsSetup(NVGcontext* ctx, float scale)
@@ -2268,6 +2242,10 @@ static float nvg__textAsPaths(NVGcontext* ctx, float x, float y, const char* str
       if (points[i].type == STBTT_vmove) {
         nvgMoveTo(ctx, points[i].x, points[i].y);
         nvgPathWinding(ctx, NVG_AUTOW);
+        if(i == 0) {
+          float restart[] = { NVG_RESTART };  // flag indicating start of new path (and not just subpath)
+          nvg__appendCommands(ctx, restart, 1);
+        }
       }
       else if (points[i].type == STBTT_vline)
         nvgLineTo(ctx, points[i].x, points[i].y);

@@ -33,7 +33,7 @@ DEPENDBASE ?= c:[\\]temp[\\]styluslabs
 # for dynamically linked Windows SDL libraries, both SDL2.lib and SDL2main.lib are needed
 LIBS = \
   ../../../SDL/Release/SDL2-MD.lib \
-	skia.lib \
+  skia.lib \
   glu32.lib \
   opengl32.lib \
   gdi32.lib \

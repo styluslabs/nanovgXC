@@ -9,16 +9,18 @@ nanovgXC is a small library for rendering vector graphics, based on [nanovg](htt
 * support for rendering text as paths
 * dashed strokes
 
-If none of the above are needed for your use case, nanovg will likely have better performance and be a better choice.
+If none of the above are needed for your use case, nanovg may be a better choice.
 
-Cursory testing suggests that nanovgXC is several times faster than skia for GPU and multithreaded CPU rendering - perhaps [Cunningham's Law](https://meta.wikimedia.org/wiki/Cunningham%27s_Law) will inspire more careful testing.  See [/example/skia_test/Makefile](/example/skia-test/Makefile).
+Cursory testing suggests that nanovgXC is several times faster than skia for GPU and multithreaded CPU rendering - perhaps [Cunningham's Law](https://meta.wikimedia.org/wiki/Cunningham%27s_Law) will inspire more careful testing.  See [example/skia-test/Makefile](/example/skia-test/Makefile).
 
-Two rendering backends are available:
-1. OpenGL 3 / ES3 backend implementing "exact coverage" antialiased rendering using one of three approaches:
+Three rendering backends are available:
+
+1. [nanovg_vtex](/src/nanovg_vtex.h): Single pass OpenGL backend using vector texture approach (frag shader iterates over all edges for path, read from texture).  Large paths are broken up into tiles.
+2. [nanovg_gl](/src/nanovg_gl.h): Two pass OpenGL backend using one of three approaches:
     * GL_EXT_shader_framebuffer_fetch - iOS (also works on many desktop GPUs but with poor performance)
     * GL_ARB_shader_image_load_store/GL_OES_shader_image_atomic - Android (ES 3.1+) and Windows/Linux (GL 4 level hardware)
     * no extensions - switches between two framebuffers for each path (one for accumulating winding, one for final output).  Not as slow as it sounds on desktop GPUs - faster than software renderer for large paths.
-2. software renderer backend based on [nanosvg](https://github.com/memononen/nanosvg) and [stb_truetype](https://github.com/nothings/stb), supporting both "exact coverage" and sub-scanline rendering (see below).  Supports multi-threaded rendering, with each thread rendering a separate region of the output.  This significantly improves performance on desktop platforms, less so on mobile.
+3. [nanovg_sw](/src/nanovg_sw.h): software renderer backend based on [nanosvg](https://github.com/memononen/nanosvg) and [stb_truetype](https://github.com/nothings/stb), supporting both "exact coverage" and sub-scanline rendering (see below).  Supports multi-threaded rendering, with each thread rendering a separate region of the output.  This significantly improves performance on desktop platforms, less so on mobile.
 
 Text is rendered by calculating a "summed" font atlas where each pixel stores the total coverage in the rectangle defined by that pixel and the origin (0,0).  When rendering, the texture coordinates for the corners of the current pixel are calculated and the corresponding values (s00, s01, s10, s11) from the summed font atlas are read with bilinear interpolation.  The pixel's coverage is then just s11 - s01 - s10 + s00.  Text at font sizes above a threshold set by `nvgAtlasTextThreshold()` is rendered directly as paths.  Text at all sizes below the threshold is rendered from the single atlas.
 
@@ -44,7 +46,7 @@ Blending in the linear RGB color space is necessary to obtain the highest antial
 Add nanovg.c to your sources and then in one source file add:
 ```C
 #define NANOVG_GLES3_IMPLEMENTATION 	// or NANOVG_GL3_IMPLEMENTATION
-#include "nanovg_gl.h"
+#include "nanovg_vtex.h"  // or "nanovg_gl.h"
 #include "nanovg_gl_utils.h"  // to use framebuffer creation and blitting functions
 ```
 and/or
@@ -54,7 +56,9 @@ and/or
 ```
 
 The drawing functions are documented in `nanovg.h`.  For example, to draw a triangle:
-``` C
+```C
+#include "nanovg.h"
+// ...
 NVGcontext* vg = nvglCreate(NVG_SRGB | NVG_AUTOW_DEFAULT);  // or nvgswCreate
 // for SW renderer, call nvgswSetFramebuffer to configure output before nvgBeginFrame
 nvgBeginFrame(vg);
@@ -105,6 +109,7 @@ BUNDLE_ID = <bundle identifier for app, e.g., com.styluslabs.demo2_sdl>
 ## Related Projects ##
 
 * [Pathfinder](https://github.com/servo/pathfinder) - larger and much more sophisticated library from Mozilla that also does exact coverage antialiased path rendering on GPUs
+* [piet-gpu](https://github.com/linebender/piet-gpu) - uses compute shaders
 
 
 ## Additional credits ##

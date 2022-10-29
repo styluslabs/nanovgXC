@@ -22,10 +22,7 @@ extern "C" {
 enum NVGLcreateFlags {
   // Flag indicating that additional debug checks are done.
   NVG_DEBUG = 1<<2,  // This value is hardcoded in Write's config - don't change!
-  // disable GL_EXT_shader_framebuffer_fetch (FB fetch is slower than FB swap on Intel GPUs)
-  NVG_NO_FB_FETCH = 1<<4,
-  // disable GL_OES_shader_image_atomic/GL_ARB_shader_image_load_store
-  NVG_NO_IMG_ATOMIC = 1<<5,
+  NVG_TILE_SIZE_MASK = 0x70  // 000 - default/auto
 };
 
 //#if defined NANOVG_GL2_IMPLEMENTATION
@@ -43,21 +40,8 @@ enum NVGLcreateFlags {
 #  define NANOVG_GLES3 1
 #  define NANOVG_GL_IMPLEMENTATION 1
 #  define NANOVG_GLU_IMPLEMENTATION 1
-#  define NANOVG_GL_USE_UNIFORMBUFFER 0  // uniform buffer slower, at least on desktop and iPhone 6S
+#  define NANOVG_GL_USE_UNIFORMBUFFER 0  //... slower, at least on desktop and iPhone 6S
 #endif
-
-#ifndef NVG_HAS_EXT
-#ifdef __glad_h_
-#define NVG_HAS_EXT(ext) (GLAD_GL_##ext)
-#elif defined(GLEW_VERSION)
-#define NVG_HAS_EXT(ext) (GLEW_##ext)
-#else
-// assumes GL_##ext is defined
-#define NVG_HAS_EXT(ext) (1)
-#endif
-#endif
-
-#define NANOVG_GL_USE_STATE_FILTER (0)
 
 // Create a NanoVG context; flags should be combination of the create flags above.
 NVGcontext* nvglCreate(int flags);
@@ -88,27 +72,19 @@ enum GLNVGuniformLoc {
   GLNVG_LOC_VIEWSIZE,
   GLNVG_LOC_TEX,
   GLNVG_LOC_TYPE,
-  GLNVG_LOC_WINDINGTEX,
-  GLNVG_LOC_WINDINGYMIN,
   GLNVG_LOC_FRAG,
-  GLNVG_LOC_IMGPARAMS,
-  GLNVG_LOC_WINDINGIMG,
+  GLNVG_LOC_EDGES,
+  GLNVG_LOC_NEDGES,
+  GLNVG_LOC_OFFSET,
   GLNVG_MAX_LOCS
 };
 
 enum GLNVGshaderType {
-  NSVG_SHADER_WINDINGCLEAR = 0,
-  NSVG_SHADER_WINDINGCALC = 1,
-  NSVG_SHADER_FILLSOLID = 2,
-  NSVG_SHADER_FILLGRAD = 3,
-  NSVG_SHADER_FILLIMG = 4,
-  NSVG_SHADER_TEXT = 5
-};
-
-enum GLNVGrenderMethod {
-  NVGL_RENDER_FB_SWAP = 0,
-  NVGL_RENDER_FB_FETCH = 1,
-  NVGL_RENDER_IMG_ATOMIC = 2
+  GLNVG_FILL_SIMPLE = 1,
+  GLNVG_FILL_SOLID = 2,
+  GLNVG_FILL_GRAD = 3,
+  GLNVG_FILL_IMG = 4,
+  GLNVG_FILL_TEXT = 5
 };
 
 #if NANOVG_GL_USE_UNIFORMBUFFER
@@ -154,23 +130,24 @@ struct GLNVGcall {
   int type;
   int fragType;
   int image;
-  int pathOffset;
-  int pathCount;
+  int fillOffset;
+  int fillCount;
   int triangleOffset;
   int triangleCount;
   int uniformOffset;
-  int imgOffset;
-  int bounds[4];
   GLNVGblend blendFunc;
 };
 typedef struct GLNVGcall GLNVGcall;
 
-struct GLNVGpath {
-  int fillOffset;
-  int fillCount;
-  float yMin;  // for winding number calc
+#define TILE_TEX_WIDTH 256
+
+// used as temporary data structure when splitting large paths into tiles
+struct GLNVGtile {
+  float* edges;
+  int nedges;
+  int cedges;
 };
-typedef struct GLNVGpath GLNVGpath;
+typedef struct GLNVGtile GLNVGtile;
 
 struct NVGLcolor {
   float r,g,b,a;
@@ -225,46 +202,32 @@ struct GLNVGcontext {
   int ntextures;
   int ctextures;
   int textureId;
-  GLuint vertBuf;
-#if defined NANOVG_GL3
-  GLuint vertArr;
-#endif
-#if NANOVG_GL_USE_UNIFORMBUFFER
-  GLuint fragBuf;
-#endif
+  GLuint vertBuf;  // VBO
+  GLuint vertArr;  // VAO
+  GLuint fragBuf;  // UBO
+  GLuint texEdges;
 
-  GLuint fbUser;
-  GLuint fbWinding;
-  GLuint texWinding;
-  GLuint texColor;  // only for GL_EXT_shader_framebuffer_fetch case
   float devicePixelRatio;
-
   int fragSize;
   int flags;
-  int renderMethod;
+  int tilesize;
 
   // Per frame buffers
   GLNVGcall* calls;
   int ccalls;
   int ncalls;
-  GLNVGpath* paths;
-  int cpaths;
-  int npaths;
-  struct NVGvertex* verts;
+  NVGvertex* verts;
   int cverts;
   int nverts;
   unsigned char* uniforms;
   int cuniforms;
   int nuniforms;
-
-  int imgWindingOffset;
-  int imgWindingSize;
-
-  // cached state
-  #if NANOVG_GL_USE_STATE_FILTER
-  GLuint boundTexture;
-  GLNVGblend blendFunc;
-  #endif
+  NVGvertex* edges;
+  int cedges;
+  int nedges;
+  // temporary buffers used for tiling large fills
+  GLNVGtile* tiles;
+  int ntiles;
 };
 typedef struct GLNVGcontext GLNVGcontext;
 
@@ -273,7 +236,11 @@ typedef struct GLNVGcontext GLNVGcontext;
 #define NVG_LOG(...) fprintf(stderr, __VA_ARGS__)
 #endif
 
-static int glnvg__maxi(int a, int b) { return a > b ? a : b; }
+static float glnvg__maxf(float a, float b) { return a < b ? b : a; }
+static float glnvg__minf(float a, float b) { return a < b ? a : b; }
+static float glnvg__clampf(float a, float mn, float mx) { return a < mn ? mn : (a > mx ? mx : a); }
+static int glnvg__maxi(int a, int b) { return a < b ? b : a; }
+static int glnvg__mini(int a, int b) { return a < b ? a : b; }
 static int glnvg__clampi(int a, int mn, int mx) { return a < mn ? mn : (a > mx ? mx : a); }
 
 #ifdef NANOVG_GLES2
@@ -292,30 +259,12 @@ static unsigned int glnvg__nearestPow2(unsigned int num)
 
 static void glnvg__bindTexture(GLNVGcontext* gl, GLuint tex)
 {
-#if NANOVG_GL_USE_STATE_FILTER
-  if (gl->boundTexture != tex) {
-    gl->boundTexture = tex;
-    glBindTexture(GL_TEXTURE_2D, tex);
-  }
-#else
   glBindTexture(GL_TEXTURE_2D, tex);
-#endif
 }
 
 static void glnvg__blendFuncSeparate(GLNVGcontext* gl, const GLNVGblend* blend)
 {
-#if NANOVG_GL_USE_STATE_FILTER
-  if ((gl->blendFunc.srcRGB != blend->srcRGB) ||
-    (gl->blendFunc.dstRGB != blend->dstRGB) ||
-    (gl->blendFunc.srcAlpha != blend->srcAlpha) ||
-    (gl->blendFunc.dstAlpha != blend->dstAlpha)) {
-
-    gl->blendFunc = *blend;
-    glBlendFuncSeparate(blend->srcRGB, blend->dstRGB, blend->srcAlpha,blend->dstAlpha);
-  }
-#else
   glBlendFuncSeparate(blend->srcRGB, blend->dstRGB, blend->srcAlpha,blend->dstAlpha);
-#endif
 }
 
 static GLNVGtexture* glnvg__allocTexture(GLNVGcontext* gl)
@@ -368,26 +317,6 @@ static int glnvg__deleteTexture(GLNVGcontext* gl, int id)
   return 0;
 }
 
-static void glnvg__dumpShaderError(GLuint shader, const char* name, const char* type)
-{
-  GLchar str[512+1];
-  GLsizei len = 0;
-  glGetShaderInfoLog(shader, 512, &len, str);
-  if (len > 512) len = 512;
-  str[len] = '\0';
-  NVG_LOG("Shader %s/%s error:\n%s\n", name, type, str);
-}
-
-static void glnvg__dumpProgramError(GLuint prog, const char* name)
-{
-  GLchar str[512+1];
-  GLsizei len = 0;
-  glGetProgramInfoLog(prog, 512, &len, str);
-  if (len > 512) len = 512;
-  str[len] = '\0';
-  NVG_LOG("Program %s error:\n%s\n", name, str);
-}
-
 static void glnvg__checkError(GLNVGcontext* gl, const char* str)
 {
   GLenum err;
@@ -397,60 +326,57 @@ static void glnvg__checkError(GLNVGcontext* gl, const char* str)
   }
 }
 
-static int glnvg__createShader(GLNVGshader* shader, const char* name, const char* header, const char* opts, const char* vshader, const char* fshader)
+static int glnvg__compileShader(GLuint shader, const char* source[], int nsource)
 {
   GLint status;
-  GLuint prog, vert, frag;
-  const char* str[3];
-  str[0] = header;
-  str[1] = opts != NULL ? opts : "";
-
-  memset(shader, 0, sizeof(*shader));
-
-  prog = glCreateProgram();
-  vert = glCreateShader(GL_VERTEX_SHADER);
-  frag = glCreateShader(GL_FRAGMENT_SHADER);
-  str[2] = vshader;
-  glShaderSource(vert, 3, str, 0);
-  str[2] = fshader;
-  glShaderSource(frag, 3, str, 0);
-
-  glCompileShader(vert);
-  glGetShaderiv(vert, GL_COMPILE_STATUS, &status);
-  if (status != GL_TRUE) {
-    glnvg__dumpShaderError(vert, name, "vert");
+  glShaderSource(shader, nsource, source, 0);
+  glCompileShader(shader);
+  glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+  if(status != GL_TRUE) {
+    int ii;
+    GLchar str[512+1];
+    GLsizei len = 0;
+    glGetShaderInfoLog(shader, 512, &len, str);
+    str[len > 512 ? 512 : len] = '\0';
+    NVG_LOG("Shader error:\n%s\n", str);
 #ifndef NDEBUG
-    NVG_LOG("Vertex shader source:\n%s%s%s\n", str[0], str[1], vshader);
+    NVG_LOG("Shader source:\n");
+    for(ii = 0; ii < nsource; ++ii)
+      NVG_LOG(source[ii]);
 #endif
     return 0;
   }
+  return 1;
+}
 
-  glCompileShader(frag);
-  glGetShaderiv(frag, GL_COMPILE_STATUS, &status);
-  if (status != GL_TRUE) {
-    glnvg__dumpShaderError(frag, name, "frag");
-#ifndef NDEBUG
-    NVG_LOG("Fragment shader source:\n%s%s%s\n", str[0], str[1], fshader);
-#endif
+static int glnvg__createProgram(GLNVGshader* shader, const char* vertsrc[], int nvertsrc, const char* fragsrc[], int nfragsrc)
+{
+  GLint status;
+
+  shader->prog = glCreateProgram();
+  shader->vert = glCreateShader(GL_VERTEX_SHADER);
+  shader->frag = glCreateShader(GL_FRAGMENT_SHADER);
+  if(glnvg__compileShader(shader->vert, vertsrc, nvertsrc) == 0)
+    return 0;
+  if(glnvg__compileShader(shader->frag, fragsrc, nfragsrc) == 0)
+    return 0;
+
+  glAttachShader(shader->prog, shader->vert);
+  glAttachShader(shader->prog, shader->frag);
+
+  glBindAttribLocation(shader->prog, 0, "va_in");
+  glBindAttribLocation(shader->prog, 1, "vb_in");
+
+  glLinkProgram(shader->prog);
+  glGetProgramiv(shader->prog, GL_LINK_STATUS, &status);
+  if(status != GL_TRUE) {
+    GLchar str[512+1];
+    GLsizei len = 0;
+    glGetProgramInfoLog(shader->prog, 512, &len, str);
+    str[len > 512 ? 512 : len] = '\0';
+    NVG_LOG("Program error:\n%s\n", str);
     return 0;
   }
-
-  glAttachShader(prog, vert);
-  glAttachShader(prog, frag);
-
-  glBindAttribLocation(prog, 0, "va_in");
-  glBindAttribLocation(prog, 1, "vb_in");
-  //glBindAttribLocation(prog, 2, "normal_in");
-
-  glLinkProgram(prog);
-  glGetProgramiv(prog, GL_LINK_STATUS, &status);
-  if (status != GL_TRUE) {
-    glnvg__dumpProgramError(prog, name);
-    return 0;
-  }
-  shader->prog = prog;
-  shader->vert = vert;
-  shader->frag = frag;
   return 1;
 }
 
@@ -467,12 +393,11 @@ static void glnvg__deleteShader(GLNVGshader* shader)
 static void glnvg__getUniforms(GLNVGshader* shader)
 {
   shader->loc[GLNVG_LOC_VIEWSIZE] = glGetUniformLocation(shader->prog, "viewSize");
-  shader->loc[GLNVG_LOC_TEX] = glGetUniformLocation(shader->prog, "tex");
+  shader->loc[GLNVG_LOC_TEX] = glGetUniformLocation(shader->prog, "imageTex");
+  shader->loc[GLNVG_LOC_EDGES] = glGetUniformLocation(shader->prog, "edgeTex");
   shader->loc[GLNVG_LOC_TYPE] = glGetUniformLocation(shader->prog, "type");
-  shader->loc[GLNVG_LOC_WINDINGTEX] = glGetUniformLocation(shader->prog, "windingTex");
-  shader->loc[GLNVG_LOC_WINDINGYMIN] = glGetUniformLocation(shader->prog, "pathYMin");
-  shader->loc[GLNVG_LOC_IMGPARAMS] = glGetUniformLocation(shader->prog, "imgParams");
-  shader->loc[GLNVG_LOC_WINDINGIMG] = glGetUniformLocation(shader->prog, "windingImg");
+  shader->loc[GLNVG_LOC_NEDGES] = glGetUniformLocation(shader->prog, "nedges");
+  shader->loc[GLNVG_LOC_OFFSET] = glGetUniformLocation(shader->prog, "offset");
 
 #if NANOVG_GL_USE_UNIFORMBUFFER
   shader->loc[GLNVG_LOC_FRAG] = glGetUniformBlockIndex(shader->prog, "frag");
@@ -481,44 +406,15 @@ static void glnvg__getUniforms(GLNVGshader* shader)
 #endif
 }
 
-/* Consider a directed line segment va -> vb of the path being rendered:
-
-^ Y      v=(v0.x - 0.55, ymax + 0.55)
-| ymax   ^       v1
-|  n=(-1,1) XXXXX/| n=(1,1) -> v=(v1.x + 0.55, ymax + 0.55)
-|           XXXX/#|
-|           XXX/##|
-|           XX/###|
-|           X/####|   v0,v1 = va,vb if va.x < vb.x else vb,va
-|           /#####|
-|         v0|#####|
-|           |#####|
-| pathYmin__|#####|__
-|   n=(-1,-1)     n=(1,-1) -> v=(v1.x + 0.55, pathYmin - 0.55)
-|          ^ v=(v0.x - 0.55, pathYmin - 0.55)
-+---------------------> X
-
-nanovg.c converts all paths to polygons by converting strokes to fills and approximating curves w/ line
- segments.  For each path, the minimum y value (i.e. bottom of AABB) is passed to the VS as pathYmin.
-
-VS: for each line segment of the polygon, 1 quad = 2 triangles = 6 vertices (4 unique) are generated; the
- vertices are distinguished by "normal_in" in the VS (n=... in the figure).  The VS outputs vertices (v=... in
- the figure) to create the quad '#' + 'X', expanding the edges of the quad by 0.55px (0.5px wasn't sufficient
- in some cases on iOS ... why?) to ensure partially convered pixels are included (triangle must cover center
- of a pixel for the pixel to be included by OpenGL rasterization).  Note that the expansion will not be
- considered part of '#' + 'X' in the discussion below.
-
-1st FS pass: With fpos being the center of the pixel, areaEdge2(vb - fpos, va - fpos) in the fragment shader
- calculates the signed area of the intersection of trapezoid '#' with the 1px x 1px square for the pixel.
- The area will be zero if va.x == vb.x or if the pixel lies entirely in the 'X' region.  Otherwise, it will
- be positive if va.x > vb.x and negative of va.x < vb.x.  This is converted to a fixed point value and added
- to the accumulated area from all trapezoids (i.e., edges) for the pixel, stored in the framebuffer for
- framebuffer fetch or swap, or in an iimage2D for image load/store.  In the latter case, pixels of the
- bounding boxes of each polygon are mapped to sequential runs of pixels in the iimage2D.
-
-2nd FS pass: The intersection area (i.e. pixel coverage) is read using framebuffer fetch or image load/store
- and multiplied by the input RGBA color (solid color, gradient, or color from image - usually not antialiased!)
-*/
+// Overview of algorithm for antialiased fills:
+// One GL draw call for bounding quad for each path - iterates over edges stored in RGBA32F texture, summing
+//  covered area calculated with areaEdge2 - see nanovg_gl.h for more explanation (incl ASCII art).
+// For large fills, bounding quad is broken up into tiles and only edges affecting the tile are included, with
+//  edges entirely above tile being merged
+// Alternate approach of combining edges from all paths for tile and making only one draw call per tile per
+//  frame was implemented in nanovg_tile.h, removed 2022/10/27 - performance was slightly worse than the
+//  current approach and there were remaining issues w/ multiple images on a tile and atlas text.
+// We should deduplicate frag shader code shared w/ nanovg_gl!
 
 // makes editing easier, but disadvantage is that commas can only be used inside ()
 #define NVG_QUOTE(s) #s
@@ -560,44 +456,21 @@ static int glnvg__renderCreate(void* uptr)
 \n  #endif
 \n
 \n  uniform vec2 viewSize;
-\n  uniform float pathYMin;
-\n  uniform int type;
 \n
-\n  //attribute vec2 normal_in;
 \n  attribute vec2 va_in;
 \n  attribute vec2 vb_in;
 \n
 \n  varying vec2 va;
 \n  varying vec2 vb;
 \n
-\n  const vec2 qverts[6] = vec2[](
-\n    vec2(-1.0f,  1.0f),
-\n    vec2( 1.0f,  1.0f),
-\n    vec2( 1.0f, -1.0f),
-\n    vec2(-1.0f,  1.0f),
-\n    vec2( 1.0f, -1.0f),
-\n    vec2(-1.0f, -1.0f));
-\n
 \n  void main()
 \n  {
 \n    // nanovg passes vertices in screen coords!
-\n    va = va_in;  //0.5f*view_wh*(vec2(1.0f) + va_in);
-\n    vb = vb_in;  //0.5f*view_wh*(vec2(1.0f) + vb_in);
-\n
-\n    vec2 norm = qverts[gl_VertexID % 6];
-\n
-\n    // normal.x > 0: we are right, otherwise left
-\n    vec2 pos = (norm.x > 0.0f) == (va_in.x > vb_in.x) ? va_in : vb_in;
-\n
-\n    // trapezoid will have less overdraw in some (most?) cases, but more complicated calc, so make a rectangle
-\n    float y_max = max(va_in.y, vb_in.y);
-\n    pos.y = norm.y > 0.0f ? y_max : pathYMin;
-\n
-\n    // expand and handle special case: normal == 0 -> va is position, vb is texture coord
-\n    vec2 pos_ex = (type != 1) ? va_in : (pos + 0.55f*norm);
+\n    va = va_in;
+\n    vb = vb_in;
 \n
 \n    // convert from screen coords to clip coords
-\n    //gl_Position = vec4(2.0f*pos_ex/viewSize - 1.0f, 0.0f, 1.0f);
+\n    vec2 pos_ex = va_in;
 \n    gl_Position = vec4(2.0f*pos_ex.x/viewSize.x - 1.0f, 1.0f - 2.0f*pos_ex.y/viewSize.y, 0.0f, 1.0f);
 \n  }
   );
@@ -605,25 +478,12 @@ static int glnvg__renderCreate(void* uptr)
   // Use github.com/KhronosGroup/glslang (apt install glslang-tools) to validate shader source
   static const char* fillFragShader = NVG_QUOTE
    (
-\n  #ifdef USE_FRAMEBUFFER_FETCH
-\n  // #extension must come before any other statements, including precision
-\n  #extension GL_EXT_shader_framebuffer_fetch : require
-\n  #elif defined(USE_IMAGE_LOADSTORE)
-\n  #ifdef GL_ES
-\n  #extension GL_OES_shader_image_atomic : require
-\n  #else
-\n  #extension GL_ARB_shader_image_load_store : require
-\n  #endif
-\n  #endif
 \n
 \n  #ifdef GL_ES
-\n  #if defined(GL_FRAGMENT_PRECISION_HIGH) || defined(NANOVG_GL3)
 \n  precision highp float;
 \n  precision highp int;
 \n  precision highp sampler2D;
-\n  #else
-\n  precision mediump float;
-\n  #endif
+\n  precision highp sampler2DArray;
 \n  #endif
 \n
 \n  #ifdef NANOVG_GL3
@@ -636,30 +496,13 @@ static int glnvg__renderCreate(void* uptr)
 \n  #define NVG_PATH_NO_AA 0x2
 \n  #define NVG_PATH_CONVEX 0x4
 \n
-\n  #ifdef USE_FRAMEBUFFER_FETCH
-\n  layout (location = 0) inout vec4 outColor;
-\n  layout (location = 1) inout int inoutWinding;
-\n  #elif defined(NANOVG_GL3)
+\n  #if defined(NANOVG_GL3)
 \n  layout (location = 0) out vec4 outColor;
 \n  #else
 \n  #define outColor gl_FragData[0]
 \n  #endif
 \n
-\n  #define WINDING_SCALE 65536.0
-\n  #ifdef USE_IMAGE_LOADSTORE
-\n  #ifdef GL_ES
-\n  layout(binding = 0, r32i) coherent uniform highp iimage2D windingImg;
-\n  #else
-\n  layout(r32i) coherent uniform highp iimage2D windingImg;  // binding = 0 ... GLES 3.1 or GL 4.2+ only
-\n  #endif
-\n  uniform ivec4 imgParams;
-\n  #define imgOffset imgParams.x
-\n  #define imgQuadStride imgParams.y
-\n  #define imgStride imgParams.z
-\n  #define disableAA (imgParams.w != 0)
-\n  #elif !defined(USE_FRAMEBUFFER_FETCH)
-\n  uniform sampler2D windingTex;
-\n  #endif
+\n  #define TILE_TEX_WIDTH 256
 \n
 \n  #ifdef USE_UNIFORMBUFFER
 \n    layout(std140) uniform frag {
@@ -693,16 +536,16 @@ static int glnvg__renderCreate(void* uptr)
 \n    #define texType int(frag[10].z)
 \n    #define fillMode int(frag[10].w)
 \n  #endif
-\n  #ifndef USE_IMAGE_LOADSTORE
-\n  #define disableAA ((fillMode & NVG_PATH_NO_AA) != 0)
-\n  #endif
-\n  uniform sampler2D tex;
+\n
+\n  uniform sampler2D imageTex;
+\n  uniform sampler2DArray edgeTex;
 \n  uniform vec2 viewSize;
 \n  uniform int type;
+\n  uniform int nedges;
+\n  uniform int offset;
 \n
 \n  varying vec2 va;
 \n  varying vec2 vb;
-\n  //#define fpos va
 \n  #define ftcoord vb
 \n
 \n  float coversCenter(vec2 v0, vec2 v1)
@@ -716,12 +559,16 @@ static int glnvg__renderCreate(void* uptr)
 \n  // unlike areaEdge(), this assumes pixel center is (0,0), not (0.5, 0.5)
 \n  float areaEdge2(vec2 v0, vec2 v1)
 \n  {
-\n    if(disableAA)
+\n    if((fillMode & NVG_PATH_NO_AA) != 0)
 \n      return v1.x < v0.x ? coversCenter(v1, v0) : -coversCenter(v0, v1);
+\n    if(v0.y < -0.5f && v1.y < -0.5f)  // entirely below pixel - note that this isn't useful for nanovg_gl
+\n      return 0.0f;
 \n    vec2 window = clamp(vec2(v0.x, v1.x), -0.5f, 0.5f);
 \n    float width = window.y - window.x;
-\n    //if(v0.y > 0.5f && v1.y > 0.5f)  -- didn't see a significant effect on Windows
-\n    //  return -width;
+\n    if(width == 0.0f)  // entirely left or right
+\n      return 0.0f;
+\n    if(v0.y > 0.5f && v1.y > 0.5f)  // entirely above pixel
+\n      return -width;
 \n    vec2 dv = v1 - v0;
 \n    float slope = dv.y/dv.x;
 \n    float midx = 0.5f*(window.x + window.y);
@@ -736,34 +583,7 @@ static int glnvg__renderCreate(void* uptr)
 \n    vec4 sides = vec4(y + 0.5f*dy, y - 0.5f*dy, (0.5f - y)/dy, (-0.5f - y)/dy);  //ry, ly, tx, bx
 \n    sides = clamp(sides + 0.5f, 0.0f, 1.0f);  // shift from -0.5..0.5 to 0..1 for area calc
 \n    float area = 0.5f*(sides.z - sides.z*sides.y - 1.0f - sides.x + sides.x*sides.w);
-\n    return width == 0.0f ? 0.0f : area * width;
-\n  }
-\n
-\n  #ifdef USE_IMAGE_LOADSTORE
-\n  // imageBuffer image type allows for 1D buffer, but max size may be very small on some GPUs
-\n  ivec2 imgCoords()
-\n  {
-\n    int idx = imgOffset + int(gl_FragCoord.x) + int(gl_FragCoord.y)*imgQuadStride;
-\n    int y = idx/imgStride;
-\n    return ivec2(idx - y*imgStride, y);
-\n  }
-\n  #endif
-\n
-\n  float coverage()
-\n  {
-\n    if((fillMode & NVG_PATH_CONVEX) != 0)
-\n      return 1.0f;
-\n  #ifdef USE_FRAMEBUFFER_FETCH
-\n    float W = float(inoutWinding)/WINDING_SCALE;
-\n  #elif defined(USE_IMAGE_LOADSTORE)
-\n    float W = float(imageAtomicExchange(windingImg, imgCoords(), 0))/WINDING_SCALE;
-\n  #else
-\n    float W = texelFetch(windingTex, ivec2(gl_FragCoord.xy), 0).r;
-\n    //float W = texture2D(windingTex, gl_FragCoord.xy/viewSize).r;  // note .r (first) component
-\n  #endif
-\n    // even-odd fill if bit 0 set, otherwise winding fill
-\n    return ((fillMode & NVG_PATH_EVENODD) == 0) ? min(abs(W), 1.0f) : (1.0f - abs(mod(W, 2.0f) - 1.0f));
-\n    // previous incorrect calculation for no AA case wrapped these in round(x) := floor(x + 0.5f)
+\n    return area * width;
 \n  }
 \n
 \n  float sdroundrect(vec2 pt, vec2 ext, float rad)
@@ -846,102 +666,79 @@ static int glnvg__renderCreate(void* uptr)
 \n  }
 \n  #endif
 \n
+\n  vec4 edgeFetch(int idx)
+\n  {
+\n    // col += 1; if(col >= TILE_TEX_WIDTH) { col = 0; row += 1; if(row >= TILE_TEX_WIDTH) { row = 0; layer += 1; } } -- no detectable improvement
+\n    int idx0 = idx + offset;
+\n    int layer = idx0/(TILE_TEX_WIDTH*TILE_TEX_WIDTH);
+\n    int idx1 = idx0 - layer*(TILE_TEX_WIDTH*TILE_TEX_WIDTH);
+\n    int row = idx1/TILE_TEX_WIDTH;
+\n    int col = idx1 - row*TILE_TEX_WIDTH;
+\n    return texelFetch(edgeTex, ivec3(col, row, layer), 0);
+\n }
+\n
+\n  float coverage(float W)
+\n  {
+\n    if((fillMode & NVG_PATH_CONVEX) != 0)
+\n      return 1.0f;
+\n    if((fillMode & NVG_PATH_EVENODD) != 0)
+\n      return 1.0f - abs(mod(W, 2.0f) - 1.0f);
+\n    return min(abs(W), 1.0f);  // non-zero fill
+\n  }
+\n
 \n  void main(void)
 \n  {
 \n    vec4 result;
 \n    vec2 fpos = vec2(gl_FragCoord.x, viewSize.y - gl_FragCoord.y);
-\n    int winding = 0;
-\n    if (type == 0) {  // clear winding number (not used in USE_FRAMEBUFFER_FETCH case)
-\n      result = vec4(0.0f);
-\n    } else if (type == 1) {  // calculate winding
-\n      float W = areaEdge2(vb - fpos, va - fpos);
-\n  #ifdef USE_FRAMEBUFFER_FETCH
-\n      result = vec4(0.0f);
-\n      winding = int(W*WINDING_SCALE) + inoutWinding;
-\n  #elif defined(USE_IMAGE_LOADSTORE)
-\n      result = vec4(0.0f);
-\n      imageAtomicAdd(windingImg, imgCoords(), int(W*WINDING_SCALE));
-\n      //discard;  -- doesn't seem to affect performance
-\n  #else
-\n      result = vec4(W);
-\n  #endif
+\n    float W = 0.0f;
+\n    for(int ii = 0; ii < nedges; ++ii) {
+\n      vec4 edge = edgeFetch(ii);
+\n      W += areaEdge2(edge.zw - fpos, edge.xy - fpos);  //noAA ? coversCenter(vb, va) :
+\n    }
+\n    float cov = coverage(W);
+\n    if (type == 0) {  // not used
+\n      result = vec4(1.0f, 0, 0, 1.0f);
+\n    } else if (type == 1) {  // no scissor
+\n      result = innerCol*cov;
 \n    } else if (type == 2) {  // Solid color
-\n      result = innerCol*(scissorMask(fpos)*coverage());
+\n      result = innerCol*(scissorMask(fpos)*cov);
 \n    } else if (type == 3) {  // Gradient
 \n      // Calculate gradient color using box gradient
 \n      vec2 pt = (paintMat * vec3(fpos,1.0)).xy;
 \n      float d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);
 \n      vec4 color = mix(innerCol,outerCol,d);
 \n      // Combine alpha
-\n      result = color*(scissorMask(fpos)*coverage());
+\n      result = color*(scissorMask(fpos)*cov);
 \n    } else if (type == 4) {  // Image
 \n      // Calculate color from texture
 \n      vec2 pt = (paintMat * vec3(fpos,1.0)).xy / extent;
-\n      vec4 color = texture2D(tex, pt);
+\n      vec4 color = texture2D(imageTex, pt);
 \n      if (texType == 1) color = vec4(color.xyz*color.w,color.w);
 \n      else if (texType == 2) color = vec4(color.x);
 \n      // Apply color tint and alpha.
 \n      color *= innerCol;
 \n      // Combine alpha
-\n      result = color*(scissorMask(fpos)*coverage());
+\n      result = color*(scissorMask(fpos)*cov);
 \n    } else if (type == 5) {  // Textured tris - only used for text, so no need for coverage()
 \n  #ifdef USE_SDF_TEXT
-\n      float cov = scissorMask(fpos)*superSDF(tex, ftcoord);
+\n      float tcov = scissorMask(fpos)*superSDF(imageTex, ftcoord);
 \n  #else
-\n      float cov = scissorMask(fpos)*summedTextCov(tex, ftcoord);
+\n      float tcov = scissorMask(fpos)*summedTextCov(imageTex, ftcoord);
 \n  #endif
-\n      result = vec4(cov) * innerCol;
-\n      // this is wrong - see alternative outColor calc below for correct text gamma handling
-\n      //result = innerCol*pow(vec4(cov), vec4(1.5,1.5,1.5,0.5));
+\n      result = vec4(tcov) * innerCol;
 \n    }
-\n  #ifdef USE_FRAMEBUFFER_FETCH
-\n    outColor = result + (1.0f - result.a)*outColor;
-\n    //outColor.rgb = pow(pow(result.rgb, vec3(1.5/2.2)) + (1.0f - result.a)*pow(outColor.rgb, vec3(1.5/2.2)), vec3(2.2/1.5));
-\n    inoutWinding = winding;
-\n  #else
 \n    outColor = result;
-\n  #endif
 \n  }
   );
 
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
   int align = 4;
-  const char* shaderOpts = NULL;
+  const char* vertsrc[] = { shaderHeader, fillVertShader };
+  const char* fragsrc[] = { shaderHeader, fillFragShader };
 
   glnvg__checkError(gl, "init");
-  gl->renderMethod = NVGL_RENDER_FB_SWAP;  // default
-#if defined(GL_EXT_shader_framebuffer_fetch)
-  if (!(gl->flags & NVG_NO_FB_FETCH)) {
-    if (NVG_HAS_EXT(EXT_shader_framebuffer_fetch))
-      gl->renderMethod = NVGL_RENDER_FB_FETCH;
-  }
-#endif
-// image load/store is faster than FB fetch on desktop (at least Intel GPUs)
-  if(!(gl->flags & NVG_NO_IMG_ATOMIC)) {
-#ifdef GL_ARB_shader_image_load_store  // desktop GL only
-    if(NVG_HAS_EXT(ARB_shader_image_load_store))
-      gl->renderMethod = NVGL_RENDER_IMG_ATOMIC;
-#elif defined(GL_ES_VERSION_3_1)  //defined(GL_OES_shader_image_atomic) || defined(GL_ES_VERSION_3_2)
-    // basically every GLES3.1 impl seems to include GL_OES_shader_image_atomic
-    // I think we may want to prefer FB fetch over image load/store on mobile, but some Qualcomm GPUs (Adreno)
-    //  apparently don't implement it correctly, so give priority to image load/store for now
-    gl->renderMethod = NVGL_RENDER_IMG_ATOMIC;
-#else
-#define NVGL_NO_IMG_ATOMIC 1  // disable code if no possibility of support on current platform
-#endif
-  }
 
-  if(gl->renderMethod == NVGL_RENDER_FB_FETCH) {
-    shaderOpts = "#define USE_FRAMEBUFFER_FETCH\n";
-    NVG_LOG("nvg2: using GL_EXT_shader_framebuffer_fetch\n");
-  } else if(gl->renderMethod == NVGL_RENDER_IMG_ATOMIC) {
-    shaderOpts = "#define USE_IMAGE_LOADSTORE\n";
-    NVG_LOG("nvg2: using GL_ARB_shader_image_load_store/GL_OES_shader_image_atomic\n");
-  } else {
-    NVG_LOG("nvg2: no extensions in use\n");
-  }
-
-  if (glnvg__createShader(&gl->shader, "shader", shaderHeader, shaderOpts, fillVertShader, fillFragShader) == 0)
+  if(glnvg__createProgram(&gl->shader, vertsrc, 2, fragsrc, 2) == 0)
     return 0;
 
   glnvg__checkError(gl, "uniform locations");
@@ -961,8 +758,19 @@ static int glnvg__renderCreate(void* uptr)
 #endif
   gl->fragSize = sizeof(GLNVGfragUniforms) + align - sizeof(GLNVGfragUniforms) % align;
 
+  glGenTextures(1, &gl->texEdges);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, gl->texEdges);
+  glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+
+  int tileflag = (gl->flags & NVG_TILE_SIZE_MASK) >> 4;
+  gl->tilesize = tileflag > 0 ? 1 << (tileflag + 1) : 32;
+  NVG_LOG("nvg2: GL vector texture renderer\n");
+
   // alloc framebuffer for winding accum; will be inited in renderViewport when viewport size is known
-  glGenFramebuffers(1, &gl->fbWinding);
+  //glGenFramebuffers(1, &gl->fbWinding);
   glnvg__checkError(gl, "create done");
   glFinish();
   return 1;
@@ -1140,100 +948,16 @@ static void glnvg__setUniforms(GLNVGcontext* gl, int uniformOffset, int image)
 static void glnvg__renderViewport(void* uptr, float width, float height, float devicePixelRatio)
 {
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
-
   gl->devicePixelRatio = devicePixelRatio;
-
-  // if we want to only recreate textures if viewport becomes larger (but not smaller), we could pass
-  //  winding texture size as separate uniform (not needed for EXT_shader_framebuffer_fetch)
-  if (gl->view[0] != width || gl->view[1] != height) {
-    if(gl->texWinding > 0)
-      glDeleteTextures(1, &gl->texWinding);
-    if(gl->texColor > 0)
-      glDeleteTextures(1, &gl->texColor);
-    gl->texWinding = 0;
-    gl->texColor = 0;
-  }
   gl->view[0] = width;
   gl->view[1] = height;
-}
-
-// Apparently, rasterization for pixels exactly on edges can differ between a FBO and default framebuffer (in
-//  the y direction, likely due to OpenGL origin at lower left vs. the usual upper left), so using the same
-//  quad for clear pass and fill pass can result in artifacts w/ overlapping paths when quad y0 has
-//  fract(y0) = 0.5 due to some pixels not being cleared.
-// A safe, proper solution would be to use a separate, slightly larger (i.e. +/-0.51 px) quad for clear pass
-// ... but for now, we'll just require that user draw into FBO
-// Also: could we use glBlendFunci, glColorMaski for FB swap?
-static void glnvg__fill(GLNVGcontext* gl, GLNVGcall* call)
-{
-  GLNVGpath* paths = &gl->paths[call->pathOffset];
-  int i, npaths = call->pathCount;
-  glnvg__setUniforms(gl, call->uniformOffset, call->image); // NOTE: this binds/unbinds texture!
-
-  if (gl->renderMethod == NVGL_RENDER_FB_SWAP) {
-    glBindFramebuffer(GL_FRAMEBUFFER, gl->fbWinding);
-    // clear needed region of winding texture
-    glBlendFunc(GL_ZERO, GL_ZERO);
-    glUniform1i(gl->shader.loc[GLNVG_LOC_TYPE], NSVG_SHADER_WINDINGCLEAR);
-    glDrawArrays(GL_TRIANGLE_STRIP, call->triangleOffset, call->triangleCount);
-    glnvg__checkError(gl, "fill: clear winding");
-  }
-
-  // accumulate winding
-  if (gl->renderMethod == NVGL_RENDER_FB_SWAP)
-    glBlendFunc(GL_ONE, GL_ONE);
-  glUniform1i(gl->shader.loc[GLNVG_LOC_TYPE], NSVG_SHADER_WINDINGCALC);
-  for (i = 0; i < npaths; i++) {
-    glUniform1f(gl->shader.loc[GLNVG_LOC_WINDINGYMIN], paths[i].yMin < 0 ? 0 : paths[i].yMin);
-    glDrawArrays(GL_TRIANGLES, paths[i].fillOffset, paths[i].fillCount);
-  }
-  glnvg__checkError(gl, "fill: accumulate winding");
-
-  // read from winding texture to fill
-  glUniform1i(gl->shader.loc[GLNVG_LOC_TYPE], call->fragType);
-  // restore blend func
-  if (gl->renderMethod != NVGL_RENDER_FB_FETCH)
-    glnvg__blendFuncSeparate(gl, &call->blendFunc);
-
-  if (gl->renderMethod == NVGL_RENDER_FB_SWAP) {
-    glBindFramebuffer(GL_FRAMEBUFFER, gl->fbUser);
-    glActiveTexture(GL_TEXTURE0 + 1);
-    glBindTexture(GL_TEXTURE_2D, gl->texWinding);
-  }
-
-  glDrawArrays(GL_TRIANGLE_STRIP, call->triangleOffset, call->triangleCount);
-  glnvg__checkError(gl, "fill: fill");
-
-  if (gl->renderMethod == NVGL_RENDER_FB_SWAP) {
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE0);
-  }
-}
-
-static void glnvg__convexFill(GLNVGcontext* gl, GLNVGcall* call)
-{
-  glnvg__blendFuncSeparate(gl, &call->blendFunc);
-  glUniform1i(gl->shader.loc[GLNVG_LOC_TYPE], call->fragType);
-  glnvg__setUniforms(gl, call->uniformOffset, call->image);
-  //for (i = 0; i < npaths; i++)
-  glDrawArrays(GL_TRIANGLE_FAN, call->triangleOffset, call->triangleCount);
-  glnvg__checkError(gl, "convex fill");
-}
-
-static void glnvg__triangles(GLNVGcontext* gl, GLNVGcall* call)
-{
-  glnvg__blendFuncSeparate(gl, &call->blendFunc);
-  glUniform1i(gl->shader.loc[GLNVG_LOC_TYPE], call->fragType);
-  glnvg__setUniforms(gl, call->uniformOffset, call->image);
-  glDrawArrays(GL_TRIANGLES, call->triangleOffset, call->triangleCount);
-  glnvg__checkError(gl, "triangles fill");
 }
 
 static void glnvg__renderCancel(void* uptr)
 {
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
   gl->nverts = 0;
-  gl->npaths = 0;
+  gl->nedges = 0;
   gl->ncalls = 0;
   gl->nuniforms = 0;
 }
@@ -1273,77 +997,8 @@ static GLNVGblend glnvg__blendCompositeOperation(NVGcompositeOperationState op)
   return blend;
 }
 
-#ifndef NVGL_NO_IMG_ATOMIC
-#ifdef GL_ES_VERSION_3_1
-#define glMemoryBarrier glMemoryBarrierByRegion
-#endif
-
-static void glnvg__imgAtomicFlush(GLNVGcontext* gl)
-{
-  int fillidx = 0, accumidx = 0;
-  // newer Intel Windows graphics drivers (v26 but not v21) freeze if uniforms are not initialized, w/
-  //  "Display driver igfx stopped responding and has successfully recovered." in Windows Event Viewer
-  glnvg__setUniforms(gl, 0, 0);
-  while(fillidx < gl->ncalls) {
-    for (; accumidx < gl->ncalls; ++accumidx) {
-      GLNVGcall* call = &gl->calls[accumidx];
-      if(call->type == GLNVG_FILL) {
-        GLNVGpath* paths = &gl->paths[call->pathOffset];
-        int i, npaths = call->pathCount;
-        int disableAA = (int)nvg__fragUniformPtr(gl, call->uniformOffset)->fillMode & NVG_PATH_NO_AA ? 1 : 0;
-        // setup params for converting gl_FragCoord.xy to image index
-        int w = call->bounds[2] - call->bounds[0] + 1;  // +1 because bounds are inclusive
-        int minidx = call->bounds[0] + (gl->view[1] - call->bounds[3] - 1)*w;
-        int maxidx = call->bounds[2] + (gl->view[1] - call->bounds[1] - 1)*w;
-        int nextOffset = gl->imgWindingOffset + (maxidx - minidx) + 1;
-        // if not enough room in imgWinding for this call, run fill passes and restart
-        if(nextOffset > gl->imgWindingSize)
-          break;
-        call->imgOffset = gl->imgWindingOffset - minidx;
-        gl->imgWindingOffset = nextOffset;
-        // offset, quad stride, imgWinding stride, disable AA flag
-        glUniform4i(gl->shader.loc[GLNVG_LOC_IMGPARAMS], call->imgOffset, w, gl->view[0], disableAA);
-
-        // accumulate winding
-        glUniform1i(gl->shader.loc[GLNVG_LOC_TYPE], NSVG_SHADER_WINDINGCALC);
-        for (i = 0; i < npaths; i++) {
-          glUniform1f(gl->shader.loc[GLNVG_LOC_WINDINGYMIN], paths[i].yMin < 0 ? 0 : paths[i].yMin);
-          glDrawArrays(GL_TRIANGLES, paths[i].fillOffset, paths[i].fillCount);
-        }
-        glnvg__checkError(gl, "fill: accumulate winding");
-      }
-    }
-    // GL_FRAMEBUFFER_BARRIER_BIT needed for Intel Xe graphics for some reason
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
-    gl->imgWindingOffset = 0;
-    for (; fillidx < accumidx; ++fillidx) {
-      GLNVGcall* call = &gl->calls[fillidx];
-      if (call->type == GLNVG_FILL) {
-        int w = call->bounds[2] - call->bounds[0] + 1;  // +1 because bounds are inclusive
-        glnvg__setUniforms(gl, call->uniformOffset, call->image);  // NOTE: this binds/unbinds texture!
-        glUniform4i(gl->shader.loc[GLNVG_LOC_IMGPARAMS], call->imgOffset, w, gl->view[0], 0);
-        // read from winding texture to fill
-        glUniform1i(gl->shader.loc[GLNVG_LOC_TYPE], call->fragType);
-        glnvg__blendFuncSeparate(gl, &call->blendFunc);
-        glDrawArrays(GL_TRIANGLE_STRIP, call->triangleOffset, call->triangleCount);
-        glnvg__checkError(gl, "fill: fill");
-      } else if (call->type == GLNVG_TRIANGLES) {
-        glnvg__triangles(gl, call);
-      } else if (call->type == GLNVG_CONVEXFILL) {
-        glnvg__convexFill(gl, call);
-      }
-    }
-    // have to wait for imgWinding to be cleared before we can start writing again
-    if (fillidx < gl->ncalls)
-      glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
-  }
-}
-#endif
-
 static void glnvg__renderFlush(void* uptr)
 {
-  static const GLenum drawBuffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
-  static const float clearColor[] = {0.0f, 0.0f, 0.0f, 0.0f};
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
   int i;
 
@@ -1351,78 +1006,25 @@ static void glnvg__renderFlush(void* uptr)
     glnvg__renderCancel(uptr);
     return;
   }
-
-  // save id of user's destination framebuffer (we assume same FB for draw and read)
-  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, (GLint*)&gl->fbUser);
-  // (re)create winding accum texture
-  if (gl->texWinding == 0) {
-    glGenTextures(1, &gl->texWinding);
-    glActiveTexture(GL_TEXTURE0 + 1);
-    glBindTexture(GL_TEXTURE_2D, gl->texWinding);
-    // w/ gl_LastFragData or glTextureBarrier, we could use a single RGBA16F texture for color and winding
-    //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
-    if (gl->renderMethod == NVGL_RENDER_IMG_ATOMIC)
-#ifdef GL_ES_VERSION_3_0
-      glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32I, gl->view[0], gl->view[1]);
-#else
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_R32I, gl->view[0], gl->view[1], 0, GL_RED_INTEGER, GL_INT, NULL);
-#endif
-    else if(gl->renderMethod == NVGL_RENDER_FB_FETCH)
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_R32I, gl->view[0], gl->view[1], 0, GL_RED_INTEGER, GL_INT, NULL);
-    else // FB swap -- must use float since blending doesn't work with ints
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, gl->view[0], gl->view[1], 0, GL_RED, GL_FLOAT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, gl->fbWinding);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl->texWinding, 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
-
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-      NVG_LOG("Error creating framebuffer for winding accumulation\n");
-    glClearBufferfv(GL_COLOR, 0, clearColor);
-    // for FB fetch, unbind from attachment 0
-    if (gl->renderMethod != NVGL_RENDER_FB_SWAP)
-      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, gl->fbUser);
-    glnvg__checkError(gl, "winding accum FB setup");
+#ifdef NVGL_STATS
+  double npix = 0, npixedges = 0;
+  for(i = 0; i < gl->ncalls; i++) {
+    GLNVGcall* call = &gl->calls[i];
+    NVGvertex* lt = &gl->verts[call->triangleOffset];
+    NVGvertex* rb = &gl->verts[call->triangleOffset+3];
+    double callpix = (rb->x0 - lt->x0)*(rb->y0 - lt->y0);
+    npix += callpix;
+    npixedges += call->fillCount*callpix;
   }
-
-  if (gl->renderMethod == NVGL_RENDER_FB_FETCH) {
-    // When using framebuffer fetch, user is responsible for creating and binding framebuffer before calling
-    //  nvgEndFrame(), e.g., using nvgluCreateFramebuffer() and nvgluBindFramebuffer()
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl->texWinding, 0);
-    glDrawBuffers(2, drawBuffers);
-#ifndef NVGL_NO_IMG_ATOMIC
-  } else if (gl->renderMethod == NVGL_RENDER_IMG_ATOMIC) {
-    glBindImageTexture(0, gl->texWinding, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
-    gl->imgWindingOffset = 0;
-    gl->imgWindingSize = gl->view[0] * gl->view[1];
+  NVG_LOG("renderFlush: %d calls, %d uniform blocks, %d edges, %.0f pixels, %.0f edges*pixels\n",
+      gl->ncalls, gl->nuniforms, gl->nedges, npix, npixedges);
 #endif
-  }
-  glnvg__checkError(gl, "windingTex setup");
-
   glUseProgram(gl->shader.prog);
   glDisable(GL_CULL_FACE);
-  // GL_BLEND works with FB fetch (since we changed from float to int accum), but a tiny bit slower (and
-  //  not well-tested on other devices), so we'll leave disabled for now
-  if (gl->renderMethod == NVGL_RENDER_FB_FETCH)
-    glDisable(GL_BLEND);
-  else
-    glEnable(GL_BLEND);
+  glEnable(GL_BLEND);
   glDisable(GL_DEPTH_TEST);
   //glDisable(GL_SCISSOR_TEST);
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, 0);
-  #if NANOVG_GL_USE_STATE_FILTER
-  gl->boundTexture = 0;
-  gl->blendFunc.srcRGB = GL_INVALID_ENUM;
-  gl->blendFunc.srcAlpha = GL_INVALID_ENUM;
-  gl->blendFunc.dstRGB = GL_INVALID_ENUM;
-  gl->blendFunc.dstAlpha = GL_INVALID_ENUM;
-  #endif
+  //glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
 #if NANOVG_GL_USE_UNIFORMBUFFER
   // Upload ubo for frag shaders
@@ -1436,132 +1038,119 @@ static void glnvg__renderFlush(void* uptr)
 #endif
   glBindBuffer(GL_ARRAY_BUFFER, gl->vertBuf);
   glBufferData(GL_ARRAY_BUFFER, gl->nverts * sizeof(NVGvertex), gl->verts, GL_STREAM_DRAW);
-  // 0 = va_in, 1 = vb_in, 2 = normal_in as set by glBindAttribLocation in glnvg__createShader
+  // 0 = va_in, 1 = vb_in as set by glBindAttribLocation in glnvg__createShader
   glEnableVertexAttribArray(0);
   glEnableVertexAttribArray(1);
-  //glEnableVertexAttribArray(2);
   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(NVGvertex), (const GLvoid*)(size_t)0);
   glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(NVGvertex), (const GLvoid*)(0 + 2*sizeof(float)));  //offsetof(NVGVertex, x1)
-  //glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(NVGvertex), (const GLvoid*)(0 + 4*sizeof(float)));  //offsetof(NVGVertex, u);
+
+  int layersize = TILE_TEX_WIDTH*TILE_TEX_WIDTH;
+  int ntilelayers = gl->nedges/layersize + (gl->nedges % layersize != 0);
+  glActiveTexture(GL_TEXTURE0 + 1);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, gl->texEdges);
+  glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA32F, TILE_TEX_WIDTH, TILE_TEX_WIDTH, ntilelayers, 0, GL_RGBA, GL_FLOAT, gl->edges);
+
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, 0);
 
   // Set view and texture locations just once per frame.
   glUniform2fv(gl->shader.loc[GLNVG_LOC_VIEWSIZE], 1, gl->view);
   glUniform1i(gl->shader.loc[GLNVG_LOC_TEX], 0);
-  if (gl->renderMethod == NVGL_RENDER_FB_SWAP)
-    glUniform1i(gl->shader.loc[GLNVG_LOC_WINDINGTEX], 1);
-#ifndef NANOVG_GLES3
-  // in GLES, image unit location can't be set w/ glUniform, only queried - so we use binding = 0 in shader
-  else if(gl->renderMethod == NVGL_RENDER_IMG_ATOMIC)
-    glUniform1i(gl->shader.loc[GLNVG_LOC_WINDINGIMG], 0);
-#endif
+  glUniform1i(gl->shader.loc[GLNVG_LOC_EDGES], 1);  // edge data texture array
 
 #if NANOVG_GL_USE_UNIFORMBUFFER
   glBindBuffer(GL_UNIFORM_BUFFER, gl->fragBuf);
 #endif
   glnvg__checkError(gl, "renderFlush setup");
 
-#ifndef NVGL_NO_IMG_ATOMIC
-  if(gl->renderMethod == NVGL_RENDER_IMG_ATOMIC)
-    glnvg__imgAtomicFlush(gl);
-  else
-#endif
-  {
-    for (i = 0; i < gl->ncalls; i++) {
-      GLNVGcall* call = &gl->calls[i];
-      if (call->type == GLNVG_FILL)
-        glnvg__fill(gl, call);
-      else if (call->type == GLNVG_CONVEXFILL)
-        glnvg__convexFill(gl, call);
-      else if (call->type == GLNVG_TRIANGLES)
-        glnvg__triangles(gl, call);
-    }
+  for (i = 0; i < gl->ncalls; i++) {
+    GLNVGcall* call = &gl->calls[i];
+    GLNVGblend* blend = &call->blendFunc;
+    GLNVGblend* prevblend = i > 0 ? &gl->calls[i-1].blendFunc : NULL;
+    if(i == 0 || call->uniformOffset != gl->calls[i-1].uniformOffset || call->image != gl->calls[i-1].image)
+      glnvg__setUniforms(gl, call->uniformOffset, call->image);
+    if(!prevblend || blend->srcRGB != prevblend->srcRGB || blend->srcAlpha != prevblend->srcAlpha
+        || blend->dstRGB != prevblend->dstRGB || blend->dstAlpha != prevblend->dstAlpha)
+      glnvg__blendFuncSeparate(gl, &call->blendFunc);
+    glUniform1i(gl->shader.loc[GLNVG_LOC_TYPE], call->fragType);
+    glUniform1i(gl->shader.loc[GLNVG_LOC_NEDGES], call->fillCount);  // will be zero except for GLNVG_FILL
+    glUniform1i(gl->shader.loc[GLNVG_LOC_OFFSET], call->fillOffset);  // avoid problems due to undef uniforms
+    if (call->type == GLNVG_FILL)
+      glDrawArrays(GL_TRIANGLE_STRIP, call->triangleOffset, call->triangleCount);
+    else if (call->type == GLNVG_CONVEXFILL)
+      glDrawArrays(GL_TRIANGLE_FAN, call->triangleOffset, call->triangleCount);
+    else if (call->type == GLNVG_TRIANGLES)
+      glDrawArrays(GL_TRIANGLES, call->triangleOffset, call->triangleCount);
+    glnvg__checkError(gl, "renderFlush call");
   }
 
   glDisableVertexAttribArray(0);
   glDisableVertexAttribArray(1);
-  //glDisableVertexAttribArray(2);
 #if defined NANOVG_GL3
   glBindVertexArray(0);
 #endif
   glBindBuffer(GL_ARRAY_BUFFER, 0);
   glUseProgram(0);
   glnvg__bindTexture(gl, 0);
-
-  // unbind our winding texture
-  if (gl->renderMethod == NVGL_RENDER_FB_FETCH) {
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, 0, 0);
-    glDrawBuffers(1, drawBuffers);
-#ifndef NVGL_NO_IMG_ATOMIC
-  } else if (gl->renderMethod == NVGL_RENDER_IMG_ATOMIC) {
-    glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32I);
-#endif
-  }
-  glnvg__checkError(gl, "windingTex unbind");
+  glActiveTexture(GL_TEXTURE0 + 1);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+  glnvg__checkError(gl, "renderFlush cleanup");
 
   // Reset calls
   gl->nverts = 0;
-  gl->npaths = 0;
+  gl->nedges = 0;
   gl->ncalls = 0;
   gl->nuniforms = 0;
 }
 
-static GLNVGcall* glnvg__allocCall(GLNVGcontext* gl)
+static int glnvg__allocCalls(GLNVGcontext* gl, int n)
 {
-  GLNVGcall* ret = NULL;
-  if (gl->ncalls+1 > gl->ccalls) {
-    GLNVGcall* calls;
-    int ccalls = glnvg__maxi(gl->ncalls+1, 128) + gl->ccalls/2; // 1.5x Overallocate
-    calls = (GLNVGcall*)realloc(gl->calls, sizeof(GLNVGcall) * ccalls);
-    if (calls == NULL) return NULL;
+  if (gl->ncalls+n > gl->ccalls) {
+    int ccalls = glnvg__maxi(gl->ncalls+n, 128) + gl->ccalls/2; // 1.5x Overallocate
+    GLNVGcall* calls = (GLNVGcall*)realloc(gl->calls, sizeof(GLNVGcall) * ccalls);
+    if (calls == NULL) return -1;
     gl->calls = calls;
     gl->ccalls = ccalls;
   }
-  ret = &gl->calls[gl->ncalls++];
-  memset(ret, 0, sizeof(GLNVGcall));
-  return ret;
+  memset(&gl->calls[gl->ncalls], 0, sizeof(GLNVGcall)*n);
+  gl->ncalls += n;
+  return gl->ncalls - n;
 }
 
-static int glnvg__allocPaths(GLNVGcontext* gl, int n)
+static int glnvg__allocEdges(GLNVGcontext* gl, int n)
 {
-  int ret = 0;
-  if (gl->npaths+n > gl->cpaths) {
-    GLNVGpath* paths;
-    int cpaths = glnvg__maxi(gl->npaths + n, 128) + gl->cpaths/2; // 1.5x Overallocate
-    paths = (GLNVGpath*)realloc(gl->paths, sizeof(GLNVGpath) * cpaths);
-    if (paths == NULL) return -1;
-    gl->paths = paths;
-    gl->cpaths = cpaths;
+  if (gl->nedges + n > gl->cedges) {
+    int layersize = TILE_TEX_WIDTH*TILE_TEX_WIDTH;
+    int cedges = glnvg__maxi(gl->nedges + n, 128) + gl->cedges/2; // 1.5x Overallocate
+    cedges = (cedges/layersize + (cedges % layersize != 0)) * layersize;
+    void* edges = realloc(gl->edges, sizeof(NVGvertex) * cedges);
+    if (!edges) return -1;
+    gl->cedges = cedges;
+    gl->edges = (NVGvertex*)edges;
   }
-  ret = gl->npaths;
-  gl->npaths += n;
-  return ret;
+  gl->nedges += n;
+  return gl->nedges - n;
 }
 
 static int glnvg__allocVerts(GLNVGcontext* gl, int n)
 {
-  int ret = 0;
-  // round n to multiple of 6 so that edge vertices are always aligned for gl_VertexID
-  n = 6*((n+5)/6);
   if (gl->nverts+n > gl->cverts) {
-    NVGvertex* verts;
     int cverts = glnvg__maxi(gl->nverts + n, 4096) + gl->cverts/2; // 1.5x Overallocate
-    verts = (NVGvertex*)realloc(gl->verts, sizeof(NVGvertex) * cverts);
+    NVGvertex* verts = (NVGvertex*)realloc(gl->verts, sizeof(NVGvertex) * cverts);
     if (verts == NULL) return -1;
     gl->verts = verts;
     gl->cverts = cverts;
   }
-  ret = gl->nverts;
   gl->nverts += n;
-  return ret;
+  return gl->nverts - n;
 }
 
 static int glnvg__allocFragUniforms(GLNVGcontext* gl, int n)
 {
   int ret = 0, structSize = gl->fragSize;
   if (gl->nuniforms+n > gl->cuniforms) {
-    unsigned char* uniforms;
     int cuniforms = glnvg__maxi(gl->nuniforms+n, 128) + gl->cuniforms/2; // 1.5x Overallocate
-    uniforms = (unsigned char*)realloc(gl->uniforms, structSize * cuniforms);
+    unsigned char* uniforms = (unsigned char*)realloc(gl->uniforms, structSize * cuniforms);
     if (uniforms == NULL) return -1;
     gl->uniforms = uniforms;
     gl->cuniforms = cuniforms;
@@ -1571,14 +1160,12 @@ static int glnvg__allocFragUniforms(GLNVGcontext* gl, int n)
   return ret;
 }
 
-static void glnvg__vset2(NVGvertex* vtx, float x0, float y0, float x1, float y1)  //, float u, float v)
+static void glnvg__vset2(NVGvertex* vtx, float x0, float y0, float x1, float y1)   //, float u, float v)
 {
   vtx->x0 = x0;
   vtx->y0 = y0;
   vtx->x1 = x1;
   vtx->y1 = y1;
-  //vtx->u = u;
-  //vtx->v = v;
 }
 
 static void glnvg__xformToMat3x4(float* m3, float* t)
@@ -1603,7 +1190,9 @@ static int glnvg__convertPaint(GLNVGcontext* gl, GLNVGcall* call, NVGpaint* pain
   GLNVGtexture* tex = NULL;
   float invxform[6];
 
-  GLNVGfragUniforms* frag = nvg__fragUniformPtr(gl, call->uniformOffset);
+  int offset = glnvg__allocFragUniforms(gl, 1);
+  if (offset == -1) return -1;
+  GLNVGfragUniforms* frag = nvg__fragUniformPtr(gl, offset);
   memset(frag, 0, sizeof(*frag));
 
   frag->fillMode = flags;  // NVGpathFlags
@@ -1616,6 +1205,7 @@ static int glnvg__convertPaint(GLNVGcontext* gl, GLNVGcall* call, NVGpaint* pain
     frag->scissorExt[1] = 1.0f;
     frag->scissorScale[0] = 1.0f;
     frag->scissorScale[1] = 1.0f;
+    call->fragType = GLNVG_FILL_SIMPLE;  // will be overridden if image or gradient present
   } else {
     nvgTransformInverse(invxform, scissor->xform);
     glnvg__xformToMat3x4(frag->scissorMat, invxform);
@@ -1623,6 +1213,7 @@ static int glnvg__convertPaint(GLNVGcontext* gl, GLNVGcall* call, NVGpaint* pain
     frag->scissorExt[1] = scissor->extent[1];
     frag->scissorScale[0] = sqrtf(scissor->xform[0]*scissor->xform[0] + scissor->xform[2]*scissor->xform[2])*gl->devicePixelRatio;
     frag->scissorScale[1] = sqrtf(scissor->xform[1]*scissor->xform[1] + scissor->xform[3]*scissor->xform[3])*gl->devicePixelRatio;
+    call->fragType = GLNVG_FILL_SOLID;
   }
 
   memcpy(frag->extent, paint->extent, sizeof(frag->extent));
@@ -1630,7 +1221,7 @@ static int glnvg__convertPaint(GLNVGcontext* gl, GLNVGcall* call, NVGpaint* pain
   if (paint->image != 0) {
     call->image = paint->image;
     tex = glnvg__findTexture(gl, paint->image);
-    if (tex == NULL) return 0;
+    if (tex == NULL) return -1;
     if ((tex->flags & NVG_IMAGE_FLIPY) != 0) {
       float m1[6], m2[6];
       nvgTransformTranslate(m1, 0.0f, frag->extent[1] * 0.5f);
@@ -1644,128 +1235,222 @@ static int glnvg__convertPaint(GLNVGcontext* gl, GLNVGcall* call, NVGpaint* pain
       nvgTransformInverse(invxform, paint->xform);
     }
     glnvg__xformToMat3x4(frag->paintMat, invxform);
-    call->fragType = NSVG_SHADER_FILLIMG;
+    call->fragType = GLNVG_FILL_IMG;
     frag->radius = paint->radius + 0.5f;  // radius used for SDF text weight
-
-#if NANOVG_GL_USE_UNIFORMBUFFER
     if (tex->type == NVG_TEXTURE_RGBA)
       frag->texType = (tex->flags & NVG_IMAGE_PREMULTIPLIED) ? 0 : 1;
     else
       frag->texType = 2;
-    #else
-    if (tex->type == NVG_TEXTURE_RGBA)
-      frag->texType = (tex->flags & NVG_IMAGE_PREMULTIPLIED) ? 0.0f : 1.0f;
-    else
-      frag->texType = 2.0f;
-#endif
-//		printf("frag->texType = %d\n", frag->texType);
   } else if (paint->innerColor.c != paint->outerColor.c) {
-    call->fragType = NSVG_SHADER_FILLGRAD;
+    call->fragType = GLNVG_FILL_GRAD;
     frag->radius = paint->radius;
     frag->feather = paint->feather;
     nvgTransformInverse(invxform, paint->xform);
     glnvg__xformToMat3x4(frag->paintMat, invxform);
-  } else {
-    call->fragType = NSVG_SHADER_FILLSOLID;
   }
-  return 1;
+
+  // reuse uniforms from last call if identical
+  if(offset > 0 && memcmp(frag, nvg__fragUniformPtr(gl, offset - gl->fragSize), sizeof(GLNVGfragUniforms)) == 0) {
+    offset -= gl->fragSize;
+    gl->nuniforms -= 1;
+  }
+
+  return offset;
 }
 
-static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation,
+static void glnvg__quad(NVGvertex* quad, const float* bounds, float pad)
+{
+  glnvg__vset2(&quad[0], bounds[2] + pad, bounds[3] + pad, 0, 0);
+  glnvg__vset2(&quad[1], bounds[2] + pad, bounds[1] - pad, 0, 0);
+  glnvg__vset2(&quad[2], bounds[0] - pad, bounds[3] + pad, 0, 0);
+  glnvg__vset2(&quad[3], bounds[0] - pad, bounds[1] - pad, 0, 0);
+  //return 4;  //quad + 4;
+}
+
+static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperationState compOp,
     NVGscissor* scissor, int flags, const float* bounds, const NVGpath* paths, int npaths)
 {
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
-  NVGvertex* vtx;
-  int i, j, offset, maxverts = 0;
-  GLNVGcall* call = NULL;
-  for (i = 0; i < npaths; ++i)
-    maxverts += paths[i].nfill;
-  if (maxverts == 0) return;
-  call = glnvg__allocCall(gl);
-  if (call == NULL) return;
-
-  // convex actually means fannable and non-antialiased
-  if (npaths == 1 && paths[0].convex && paths[0].nfill > 2) {
-    const NVGpath* path = &paths[0];
+  int i, edgeidx, triidx, callidx, ncalls = 0, nedges = 0;
+  float ltrb[4];
+  for (i = 0; i < npaths; ++i) {
+    nedges += paths[i].nfill;
+    if(i == 0 || paths[i].restart) ++ncalls;
+  }
+  if (nedges == 0) return;
+  ltrb[0] = glnvg__clampf(bounds[0], 0, gl->view[0]);
+  ltrb[1] = glnvg__clampf(bounds[1], 0, gl->view[1]);
+  ltrb[2] = glnvg__clampf(bounds[2], 0, gl->view[0]);
+  ltrb[3] = glnvg__clampf(bounds[3], 0, gl->view[1]);
+  float callw = ltrb[2] - ltrb[0], callh = ltrb[3] - ltrb[1];
+  if (callw <= 0 || callh <= 0) return;  // offscreen path
+  // must set convex flag before glnvg__convertPaint (due to reuse of identical uniform blocks)
+  if(npaths == 1 && paths[0].convex && paths[0].nfill > 2)
     flags |= NVG_PATH_CONVEX;
-    call->type = GLNVG_CONVEXFILL;
-    call->triangleCount = path->nfill;
-    offset = glnvg__allocVerts(gl, call->triangleCount);
-    if (offset == -1) goto error;
-    call->triangleOffset = offset;
-    vtx = &gl->verts[offset];
-    // vertices for triangle fan
-    for(i = 0; i < path->nfill; ++i)
-      glnvg__vset2(vtx++, path->fill[i].x0, path->fill[i].y0, 0, 0);
-  } else {
-    NVGvertex* quad;
-    call->type = GLNVG_FILL;
-    call->triangleCount = 4;
-    call->pathOffset = glnvg__allocPaths(gl, npaths);
-    if (call->pathOffset == -1) goto error;
-    call->pathCount = npaths;
-    offset = glnvg__allocVerts(gl, 6*maxverts + call->triangleCount);
-    if (offset == -1) goto error;
 
+  int call0 = glnvg__allocCalls(gl, 1);
+  if (call0 < 0) return;
+  GLNVGcall* call = &gl->calls[call0];
+  call->type = GLNVG_FILL;
+  call->blendFunc = glnvg__blendCompositeOperation(compOp);
+  call->uniformOffset = glnvg__convertPaint(gl, call, paint, scissor, flags);
+  if (call->uniformOffset == -1) goto error;
+
+  // convex actually means fannable and non-antialiased - this is ~2x faster for rectangles (worth keeping?)
+  if (flags & NVG_PATH_CONVEX) {
+    const NVGpath* path = &paths[0];
+    call->type = GLNVG_CONVEXFILL;
+    call->fillOffset = 0;
+    call->fillCount = 0;
+    call->triangleCount = path->nfill;
+    triidx = glnvg__allocVerts(gl, call->triangleCount);
+    if (triidx == -1) goto error;
+    call->triangleOffset = triidx;
+    // vertices for triangle fan
+    memcpy(&gl->verts[triidx], path->fill, path->nfill*sizeof(NVGvertex));
+  }
+  else if(ncalls == 1 && nedges > 16 && (callw > 2*gl->tilesize || callh > 2*gl->tilesize)) {
+    // break large paths into tiles - note that some tiles may be empty
+    // expand bounds to include all touched pixels
+    ltrb[0] = floorf(ltrb[0]); ltrb[1] = floorf(ltrb[1]); ltrb[2] = ceilf(ltrb[2]); ltrb[3] = ceilf(ltrb[3]);
+    callw = ltrb[2] - ltrb[0]; callh = ltrb[3] - ltrb[1];
+    int xtiles = ceilf(callw/gl->tilesize), ytiles = ceilf(callh/gl->tilesize);
+    int ntiles = xtiles*ytiles;
+    int tilew = ceilf(callw/xtiles), tileh = ceilf(callh/ytiles);
+    if(ntiles > gl->ntiles) {
+      gl->tiles = (GLNVGtile*)realloc(gl->tiles, ntiles*sizeof(GLNVGtile));
+      memset(gl->tiles + gl->ntiles, 0, (ntiles - gl->ntiles)*sizeof(GLNVGtile));
+      gl->ntiles = ntiles;
+    }
+    // reuse ncalls, nedges
+    nedges = 0;
+    ncalls = 0;
     for (i = 0; i < npaths; i++) {
-      GLNVGpath* copy = &gl->paths[call->pathOffset + i];
       const NVGpath* path = &paths[i];
-      memset(copy, 0, sizeof(GLNVGpath));
-      if (path->nfill > 0) {
-        vtx = &gl->verts[offset];
-        copy->fillOffset = offset;
-        copy->fillCount = 6*path->nfill;
-        for(j = 0; j < path->nfill; ++j) {
-          float x0 = path->fill[j].x0, y0 = path->fill[j].y0, x1 = path->fill[j].x1, y1 = path->fill[j].y1;
-          // two triangles for quad to be filled with winding number from this segment
-          glnvg__vset2(vtx++, x0, y0, x1, y1);  //, -1,  1);
-          glnvg__vset2(vtx++, x0, y0, x1, y1);  //,  1,  1);
-          glnvg__vset2(vtx++, x0, y0, x1, y1);  //,  1, -1);
-          glnvg__vset2(vtx++, x0, y0, x1, y1);  //, -1,  1);
-          glnvg__vset2(vtx++, x0, y0, x1, y1);  //,  1, -1);
-          glnvg__vset2(vtx++, x0, y0, x1, y1);  //, -1, -1);
+      if (path->nfill == 0) continue;
+      int pymin = glnvg__clampi(((int)(path->bounds[1] - ltrb[1] - 0.5f))/tileh, 0, ytiles-1);
+      for(int j = 0; j < path->nfill; ++j) {
+        float x0 = path->fill[j].x0, y0 = path->fill[j].y0, x1 = path->fill[j].x1, y1 = path->fill[j].y1;
+        //if((x0 < -0.5f && x1 < -0.5f) || (x0 > gl->view[0]+0.5f && x1 > gl->view[0]+0.5f)) continue;
+        if(x0 == x1) continue;  // skip vertical edges
+        // find range of tiles overlapping edge
+        int vxmin = glnvg__clampi(((int)(glnvg__minf(x0, x1) - ltrb[0] - 0.5f))/tilew, 0, xtiles-1);
+        int vxmax = glnvg__clampi(((int)(glnvg__maxf(x0, x1) - ltrb[0] + 0.5f))/tilew, 0, xtiles-1);
+        int vymax = glnvg__clampi(((int)(glnvg__maxf(y0, y1) - ltrb[1] + 0.5f))/tileh, 0, ytiles-1);
+        // write edge to each tile
+        for(int ix = vxmin; ix <= vxmax; ++ix) {
+          for(int iy = pymin; iy <= vymax; ++iy) {
+            GLNVGtile* tile = &gl->tiles[xtiles*iy + ix];
+            if(tile->nedges + 1 > tile->cedges) {
+              tile->cedges = glnvg__maxi(2*tile->cedges, 16);
+              tile->edges = (float*)realloc(tile->edges, 4*sizeof(float)*tile->cedges);
+            }
+            float* vtx = tile->edges + 4*tile->nedges;
+            if(tile->nedges > 0) {
+              // combine (flatten) connected edges lying entirely above this tile
+              float tymax = (iy+1)*tileh + ltrb[1];
+              if(y0 > tymax && y1 > tymax && vtx[-3] > tymax && x0 == vtx[-2] && y0 == vtx[-1]) {
+                vtx[-2] = x1; vtx[-1] = y1;
+                continue;
+              }
+            }
+            else
+              ++ncalls;
+            *vtx++ = x0; *vtx++ = y0; *vtx++ = x1; *vtx++ = y1;
+            ++tile->nedges;
+            ++nedges;
+          }
         }
-        //memcpy(&gl->verts[offset], path->fill, sizeof(NVGvertex) * path->nfill);
-        offset += copy->fillCount;
       }
-      copy->yMin = path->bounds[1];
     }
 
-    // bounds - note these are *inclusive*
-    call->bounds[0] = glnvg__clampi((int)(bounds[0] - 0.001f), 0, gl->view[0] - 1);
-    call->bounds[1] = glnvg__clampi((int)(bounds[1] - 0.001f), 0, gl->view[1] - 1);
-    call->bounds[2] = glnvg__clampi((int)(bounds[2] + 1.001f), 0, gl->view[0] - 1);
-    call->bounds[3] = glnvg__clampi((int)(bounds[3] + 1.001f), 0, gl->view[1] - 1);
+    edgeidx = glnvg__allocEdges(gl, nedges);
+    if (edgeidx < 0) goto error;
+    int triidx = glnvg__allocVerts(gl, 4*ncalls);
+    if (triidx < 0) goto error;
+    // create call for each (non-empty) tile
+    if(ncalls > 1 && glnvg__allocCalls(gl, ncalls-1) < 0) goto error;
+    callidx = call0;
 
-    // Quad
-    call->triangleOffset = offset;
-    quad = &gl->verts[call->triangleOffset];
-    glnvg__vset2(&quad[0], bounds[2] + 0.5f, bounds[3] + 0.5f, 0, 0);  //, 0, 0);
-    glnvg__vset2(&quad[1], bounds[2] + 0.5f, bounds[1] - 0.5f, 0, 0);  //, 0, 0);
-    glnvg__vset2(&quad[2], bounds[0] - 0.5f, bounds[3] + 0.5f, 0, 0);  //, 0, 0);
-    glnvg__vset2(&quad[3], bounds[0] - 0.5f, bounds[1] - 0.5f, 0, 0);  //, 0, 0);
+    for(int ix = 0; ix < xtiles; ++ix) {
+      for(int iy = 0; iy < ytiles; ++iy) {
+        GLNVGtile* tile = &gl->tiles[xtiles*iy + ix];
+        if (tile->nedges == 0) continue;
+        call = &gl->calls[callidx];
+        float tilebounds[4] = {ltrb[0] + ix*tilew, ltrb[1] + iy*tileh,
+            glnvg__minf(ltrb[2], ltrb[0] + (ix+1)*tilew), glnvg__minf(ltrb[3], ltrb[1] + (iy+1)*tileh)};
+        memcpy(&gl->edges[edgeidx], tile->edges, sizeof(NVGvertex) * tile->nedges);
+        if(callidx != call0)
+          memcpy(call, &gl->calls[call0], sizeof(GLNVGcall));
+        call->fillOffset = edgeidx;
+        call->fillCount = tile->nedges;
+        call->triangleOffset = triidx;
+        call->triangleCount = 4;
+        glnvg__quad(&gl->verts[triidx], tilebounds, 0);
+        edgeidx += call->fillCount;
+        triidx += call->triangleCount;
+        ++callidx;
+        tile->nedges = 0;  // reset tile
+      }
+    }
   }
+  else {
+    ltrb[0] = ltrb[1] = 1e6f;
+    ltrb[2] = ltrb[3] = -1e6f;
+    edgeidx = glnvg__allocEdges(gl, nedges);
+    if (edgeidx < 0) goto error;
+    triidx = glnvg__allocVerts(gl, 4*ncalls);
+    if (triidx < 0) goto error;
+    if (ncalls > 1 && glnvg__allocCalls(gl, ncalls - 1) < 0) goto error;
+    callidx = call0;
 
-  call->blendFunc = glnvg__blendCompositeOperation(compositeOperation);
-  call->uniformOffset = glnvg__allocFragUniforms(gl, 1);
-  if (call->uniformOffset == -1) goto error;
-  glnvg__convertPaint(gl, call, paint, scissor, flags);
+    nedges = 0;
+    for (i = 0; i < npaths; i++) {
+      memcpy(&gl->edges[edgeidx], paths[i].fill, sizeof(NVGvertex) * paths[i].nfill);
+      edgeidx += paths[i].nfill;
+      nedges += paths[i].nfill;
+      ltrb[0] = glnvg__minf(ltrb[0], paths[i].bounds[0]);
+      ltrb[1] = glnvg__minf(ltrb[1], paths[i].bounds[1]);
+      ltrb[2] = glnvg__maxf(ltrb[2], paths[i].bounds[2]);
+      ltrb[3] = glnvg__maxf(ltrb[3], paths[i].bounds[3]);
+
+      if(i + 1 == npaths || paths[i+1].restart) {
+        call = &gl->calls[callidx];
+        if(callidx != call0)
+          memcpy(call, &gl->calls[call0], sizeof(GLNVGcall));
+        call->fillOffset = edgeidx - nedges;
+        call->fillCount = nedges;
+        call->triangleOffset = triidx;
+        call->triangleCount = 4;
+        //ltrb[0] = glnvg__clampf(ltrb[0], 0, gl->view[0]);
+        //ltrb[1] = glnvg__clampf(ltrb[1], 0, gl->view[1]);
+        //ltrb[2] = glnvg__clampf(ltrb[2], 0, gl->view[0]);
+        //ltrb[3] = glnvg__clampf(ltrb[3], 0, gl->view[1]);
+        glnvg__quad(&gl->verts[triidx], ltrb, 0.5f);  // ncalls > 1 ? ltrb : bounds
+        triidx += call->triangleCount;
+        ++callidx;
+        nedges = 0;
+        ltrb[0] = ltrb[1] = 1e6f;
+        ltrb[2] = ltrb[3] = -1e6f;
+      }
+    }
+  }
   return;
 error:
-  // We get here if call alloc was ok, but something else is not.
-  // Roll back the last call to prevent drawing it.
+  // We get here if first call alloc was ok, but something went wrong before alloc of any additional calls
   if (gl->ncalls > 0) gl->ncalls--;
 }
 
-static void glnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation,
+static void glnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOperationState compOp,
     NVGscissor* scissor, const NVGvertex* verts, int nverts)
 {
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
-  GLNVGcall* call = glnvg__allocCall(gl);
-  if (call == NULL) return;
+  int callidx = glnvg__allocCalls(gl, 1);
+  if (callidx < 0) return;
+  GLNVGcall* call = &gl->calls[callidx];
 
   call->type = GLNVG_TRIANGLES;
-  call->blendFunc = glnvg__blendCompositeOperation(compositeOperation);
+  call->blendFunc = glnvg__blendCompositeOperation(compOp);
   // Allocate vertices for all the paths.
   call->triangleOffset = glnvg__allocVerts(gl, nverts);
   if (call->triangleOffset == -1) goto error;
@@ -1773,11 +1458,9 @@ static void glnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOper
   memcpy(&gl->verts[call->triangleOffset], verts, sizeof(NVGvertex) * nverts);
 
   // Fill shader
-  call->uniformOffset = glnvg__allocFragUniforms(gl, 1);
+  call->uniformOffset = glnvg__convertPaint(gl, call, paint, scissor, 0);
   if (call->uniformOffset == -1) goto error;
-  //frag = nvg__fragUniformPtr(gl, call->uniformOffset);
-  glnvg__convertPaint(gl, call, paint, scissor, 0); //, 1.0f, 1.0f, -1.0f);
-  call->fragType = NSVG_SHADER_TEXT;
+  call->fragType = GLNVG_FILL_TEXT;
   return;
 error:
   if (gl->ncalls > 0) gl->ncalls--;  // skip call if allocation error
@@ -1802,12 +1485,17 @@ static void glnvg__renderDelete(void* uptr)
   if (gl->vertBuf != 0)
     glDeleteBuffers(1, &gl->vertBuf);
 
+  glDeleteTextures(1, &gl->texEdges);
+
   for (i = 0; i < gl->ntextures; i++) {
     if (gl->textures[i].tex != 0 && (gl->textures[i].flags & NVG_IMAGE_NODELETE) == 0)
       glDeleteTextures(1, &gl->textures[i].tex);
   }
+  for(i = 0; i < gl->ntiles; ++i)
+    free(gl->tiles[i].edges);
+  free(gl->tiles);
   free(gl->textures);
-  free(gl->paths);
+  free(gl->edges);
   free(gl->verts);
   free(gl->uniforms);
   free(gl->calls);

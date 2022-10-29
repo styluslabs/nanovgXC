@@ -42,8 +42,6 @@ void startGPUTimer(GPUtimer* timer)
 
 int stopGPUTimer(GPUtimer* timer, float* times, int maxTimes)
 {
-  NVG_NOTUSED(times);
-  NVG_NOTUSED(maxTimes);
   GLuint available = 1;
   int n = 0;
   if (!timer->supported)

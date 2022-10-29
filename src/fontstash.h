@@ -113,7 +113,7 @@ void fonsSetColor(FONScontext* s, unsigned int color);
 void fonsSetSpacing(FONScontext* s, float spacing);
 void fonsSetBlur(FONScontext* s, float blur);
 void fonsSetAlign(FONScontext* s, int align);
-void fonsSetFont(FONScontext* s, int font);
+int fonsSetFont(FONScontext* s, int font);  // return -1 if font is missing or corrupt
 // get the font height (size used by fontstash) for a given em size (the standard "font size")
 float fonsEmSizeToSize(FONScontext* s, float emsize);
 // get the current font height
@@ -653,6 +653,7 @@ static FONSstate* fons__getState(FONScontext* stash)
 
 int fonsAddFallbackFont(FONScontext* stash, int base, int fallback)
 {
+  if (fallback < 0 || fallback >= stash->nfonts || base >= stash->nfonts) return 0;
   if (base >= 0) {
     FONSfont* baseFont = stash->fonts[base];
     if (baseFont->nfallbacks >= FONS_MAX_FALLBACKS)
@@ -660,7 +661,7 @@ int fonsAddFallbackFont(FONScontext* stash, int base, int fallback)
     baseFont->fallbacks[baseFont->nfallbacks++] = fallback;
     return 1;
   }
-  // global fallback
+  // base < 0 indicates global fallback
   if (stash->nfallbacks >= FONS_MAX_FALLBACKS)
     return 0;
   stash->fallbacks[stash->nfallbacks++] = fallback;
@@ -860,13 +861,18 @@ int fonsAddFontMem(FONScontext* stash, const char* name, unsigned char* data, in
   return (stash->params.flags & FONS_DELAY_LOAD) ? idx : fons__loadFont(stash, idx);
 }
 
-void fonsSetFont(FONScontext* stash, int font)
+int fonsSetFont(FONScontext* stash, int font)
 {
   // delayed loading
+  if(font < 0 || font >= stash->nfonts)
+    return FONS_INVALID;
   if(stash->fonts[font]->data && !stash->fonts[font]->dataSize)
     fons__loadFont(stash, font);
+  if(!stash->fonts[font]->data)
+    return FONS_INVALID;
 
   fons__getState(stash)->font = font;
+  return font;
 }
 
 int fonsGetFontByName(FONScontext* s, const char* name)
@@ -933,14 +939,16 @@ static FONSglyph* fons__getGlyph(FONScontext* stash, int fontid, unsigned int co
       // delayed loading
       if (stash->fonts[renderFontId]->data && !stash->fonts[renderFontId]->dataSize)
         fons__loadFont(stash, renderFontId);
-      g = fons__tt_getGlyphIndex(&stash->fonts[renderFontId]->font, codepoint);
+      if (stash->fonts[renderFontId]->data)
+        g = fons__tt_getGlyphIndex(&stash->fonts[renderFontId]->font, codepoint);
     }
     // global fallbacks
     for (i = 0; g == 0 && i < stash->nfallbacks; ++i) {
       renderFontId = stash->fallbacks[i];
       if (stash->fonts[renderFontId]->data && !stash->fonts[renderFontId]->dataSize)
         fons__loadFont(stash, renderFontId);
-      g = fons__tt_getGlyphIndex(&stash->fonts[renderFontId]->font, codepoint);
+      if (stash->fonts[renderFontId]->data)
+        g = fons__tt_getGlyphIndex(&stash->fonts[renderFontId]->font, codepoint);
     }
   } else {
     g = glyph->index;
@@ -1412,8 +1420,11 @@ int fonsExpandAtlas(FONScontext* stash, int width, int height)
 
   if (width == stash->atlas->width && height == stash->atlas->height)
     return 1;
+  // can only increase height since we've discarded the rect packing logic
+  if (width != stash->atlas->width)
+    return 0;
 
-  // Flush pending glyphs.
+  // Flush pending glyphs (no-op unless renderUpdate, renderDraw set)
   fons__flush(stash);
 
   // Create new texture
@@ -1422,32 +1433,22 @@ int fonsExpandAtlas(FONScontext* stash, int width, int height)
       return 0;
   }
   // Copy old texture data over.
-  data = (FONStexel*)malloc(width * height * sizeof(FONStexel));
+  data = (FONStexel*)realloc(stash->texData, width * height * sizeof(FONStexel));
   if (data == NULL)
     return 0;
-  for (i = 0; i < stash->atlas->height; i++) {
-    FONStexel* dst = &data[i*width];
-    FONStexel* src = &stash->texData[i*stash->atlas->width];
-    memcpy(dst, src, stash->atlas->width * sizeof(FONStexel));
-    if (width > stash->atlas->width)
-      memset(dst+stash->atlas->width, 0, (width - stash->atlas->width) * sizeof(FONStexel));
-  }
   if (height > stash->atlas->height)
     memset(&data[stash->atlas->height * width], 0, (height - stash->atlas->height) * width);
-
-  free(stash->texData);
   stash->texData = data;
 
-  // Increase atlas size
+  stash->dirtyRect[0] = 0;
+  stash->dirtyRect[1] = fons__mini(stash->dirtyRect[1], stash->atlas->height);
+  stash->dirtyRect[2] = stash->atlas->width;
+  stash->dirtyRect[3] = height;
+
   stash->atlas->width = width;
   stash->atlas->height = height;
   stash->itw = 1.0f/stash->atlas->width;
   stash->ith = 1.0f/stash->atlas->height;
-
-  stash->dirtyRect[0] = 0;
-  stash->dirtyRect[1] = 0;
-  stash->dirtyRect[2] = stash->atlas->width;
-  stash->dirtyRect[3] = stash->atlas->height;
 
   return 1;
 }

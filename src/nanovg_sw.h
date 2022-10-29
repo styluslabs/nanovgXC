@@ -808,12 +808,13 @@ static SWNVGtexture* swnvg__findTexture(SWNVGcontext* gl, int id)
 static int swnvg__renderCreate(void* uptr)
 {
   static int staticInited = 0;
+  SWNVGcontext* gl = (SWNVGcontext*)uptr;
   if(!staticInited) {
     swnvg__sRGBLUTCalc();
     staticInited = 1;
   }
 
-  NVG_LOG("nvg2: software renderer\n");
+  NVG_LOG("nvg2: software renderer%s\n", gl->flags & NVGSW_PATHS_XC ? " (XC)" : "");
   return 1;
 }
 
@@ -935,6 +936,7 @@ static void swnvg__addEdgeXC(SWNVGcontext* r, NVGvertex* vtx, float xmax)
   e->dir = ceilf(xmax);
 }
 
+// this fills in the +y direction, but we call with x and y swapped (see below) to fill in +x direction
 static float areaEdge2(float v0x, float v0y, float v1x, float v1y, float slope)
 {
   float win0 = swnvg__clampf(v0x, -0.5f, 0.5f);
@@ -942,6 +944,7 @@ static float areaEdge2(float v0x, float v0y, float v1x, float v1y, float slope)
   float width = win1 - win0;
   if(width == 0)
     return 0;
+  //if(v0y < -0.5f && v1y < -0.5f) return width;  -- don't see much effect
   if(slope == 0)
     return width * swnvg__clampf(0.5f - v0y, 0.0f, 1.0f);
   float midx = 0.5f*(win0 + win1);
