@@ -21,11 +21,11 @@ extern "C" {
 
 enum NVGLcreateFlags {
   // Flag indicating that additional debug checks are done.
-  NVG_DEBUG = 1<<2,  // This value is hardcoded in Write's config - don't change!
+  NVGL_DEBUG = 1<<2,  // This value is hardcoded in Write's config - don't change!
   // disable GL_EXT_shader_framebuffer_fetch (FB fetch is slower than FB swap on Intel GPUs)
-  NVG_NO_FB_FETCH = 1<<4,
+  NVGL_NO_FB_FETCH = 1<<4,
   // disable GL_OES_shader_image_atomic/GL_ARB_shader_image_load_store
-  NVG_NO_IMG_ATOMIC = 1<<5,
+  NVGL_NO_IMG_ATOMIC = 1<<5,
 };
 
 //#if defined NANOVG_GL2_IMPLEMENTATION
@@ -348,6 +348,7 @@ static GLNVGtexture* glnvg__allocTexture(GLNVGcontext* gl)
 static GLNVGtexture* glnvg__findTexture(GLNVGcontext* gl, int id)
 {
   int i;
+  if (!id) return NULL;
   for (i = 0; i < gl->ntextures; i++)
     if (gl->textures[i].id == id)
       return &gl->textures[i];
@@ -368,89 +369,65 @@ static int glnvg__deleteTexture(GLNVGcontext* gl, int id)
   return 0;
 }
 
-static void glnvg__dumpShaderError(GLuint shader, const char* name, const char* type)
-{
-  GLchar str[512+1];
-  GLsizei len = 0;
-  glGetShaderInfoLog(shader, 512, &len, str);
-  if (len > 512) len = 512;
-  str[len] = '\0';
-  NVG_LOG("Shader %s/%s error:\n%s\n", name, type, str);
-}
-
-static void glnvg__dumpProgramError(GLuint prog, const char* name)
-{
-  GLchar str[512+1];
-  GLsizei len = 0;
-  glGetProgramInfoLog(prog, 512, &len, str);
-  if (len > 512) len = 512;
-  str[len] = '\0';
-  NVG_LOG("Program %s error:\n%s\n", name, str);
-}
-
 static void glnvg__checkError(GLNVGcontext* gl, const char* str)
 {
   GLenum err;
-  if ((gl->flags & NVG_DEBUG) == 0) return;
+  if ((gl->flags & NVGL_DEBUG) == 0) return;
   while ((err = glGetError()) != GL_NO_ERROR) {
     NVG_LOG("Error 0x%08x after %s\n", err, str);
   }
 }
 
-static int glnvg__createShader(GLNVGshader* shader, const char* name, const char* header, const char* opts, const char* vshader, const char* fshader)
+static int glnvg__compileShader(GLuint shader, const char* source[], int nsource)
 {
   GLint status;
-  GLuint prog, vert, frag;
-  const char* str[3];
-  str[0] = header;
-  str[1] = opts != NULL ? opts : "";
-
-  memset(shader, 0, sizeof(*shader));
-
-  prog = glCreateProgram();
-  vert = glCreateShader(GL_VERTEX_SHADER);
-  frag = glCreateShader(GL_FRAGMENT_SHADER);
-  str[2] = vshader;
-  glShaderSource(vert, 3, str, 0);
-  str[2] = fshader;
-  glShaderSource(frag, 3, str, 0);
-
-  glCompileShader(vert);
-  glGetShaderiv(vert, GL_COMPILE_STATUS, &status);
-  if (status != GL_TRUE) {
-    glnvg__dumpShaderError(vert, name, "vert");
+  glShaderSource(shader, nsource, source, 0);
+  glCompileShader(shader);
+  glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+  if(status != GL_TRUE) {
+    GLchar str[512+1];
+    GLsizei len = 0;
+    glGetShaderInfoLog(shader, 512, &len, str);
+    str[len > 512 ? 512 : len] = '\0';
+    NVG_LOG("Shader error:\n%s\n", str);
 #ifndef NDEBUG
-    NVG_LOG("Vertex shader source:\n%s%s%s\n", str[0], str[1], vshader);
+    NVG_LOG("Shader source:\n");
+    for(int ii = 0; ii < nsource; ++ii)
+      NVG_LOG(source[ii]);
 #endif
     return 0;
   }
+  return 1;
+}
 
-  glCompileShader(frag);
-  glGetShaderiv(frag, GL_COMPILE_STATUS, &status);
-  if (status != GL_TRUE) {
-    glnvg__dumpShaderError(frag, name, "frag");
-#ifndef NDEBUG
-    NVG_LOG("Fragment shader source:\n%s%s%s\n", str[0], str[1], fshader);
-#endif
+static int glnvg__createProgram(GLNVGshader* shader, const char* vertsrc[], int nvertsrc, const char* fragsrc[], int nfragsrc)
+{
+  GLint status;
+
+  shader->prog = glCreateProgram();
+  shader->vert = glCreateShader(GL_VERTEX_SHADER);
+  shader->frag = glCreateShader(GL_FRAGMENT_SHADER);
+  if(glnvg__compileShader(shader->vert, vertsrc, nvertsrc) == 0)
+    return 0;
+  if(glnvg__compileShader(shader->frag, fragsrc, nfragsrc) == 0)
+    return 0;
+
+  glAttachShader(shader->prog, shader->vert);
+  glAttachShader(shader->prog, shader->frag);
+
+  glBindAttribLocation(shader->prog, 0, "va_in");
+  glBindAttribLocation(shader->prog, 1, "vb_in");
+
+  glLinkProgram(shader->prog);
+  glGetProgramiv(shader->prog, GL_LINK_STATUS, &status);
+  if(status != GL_TRUE) {
+    GLchar str[512+1];
+    GLsizei len = 0;
+    glGetProgramInfoLog(shader->prog, 512, &len, str);
+    str[len > 512 ? 512 : len] = '\0';
+    NVG_LOG("Program error:\n%s\n", str);
     return 0;
   }
-
-  glAttachShader(prog, vert);
-  glAttachShader(prog, frag);
-
-  glBindAttribLocation(prog, 0, "va_in");
-  glBindAttribLocation(prog, 1, "vb_in");
-  //glBindAttribLocation(prog, 2, "normal_in");
-
-  glLinkProgram(prog);
-  glGetProgramiv(prog, GL_LINK_STATUS, &status);
-  if (status != GL_TRUE) {
-    glnvg__dumpProgramError(prog, name);
-    return 0;
-  }
-  shader->prog = prog;
-  shader->vert = vert;
-  shader->frag = frag;
   return 1;
 }
 
@@ -546,10 +523,6 @@ static int glnvg__renderCreate(void* uptr)
   "#define USE_UNIFORMBUFFER 1\n"
 #else
   "#define UNIFORMARRAY_SIZE 11\n"
-#endif
-// append SDF text string
-#ifdef FONS_SDF
-  "#define USE_SDF_TEXT 1\n"
 #endif
   "\n";
 
@@ -793,7 +766,7 @@ static int glnvg__renderCreate(void* uptr)
 \n  float superSDF(sampler2D tex, vec2 st)
 \n  {
 \n    vec2 tex_wh = vec2(textureSize(tex, 0));  // convert from ivec2 to vec2
-\n    st = st + vec2(4.0)/tex_wh;  // account for 4 pixel padding in SDF
+\n    //st = st + vec2(4.0)/tex_wh;  // account for 4 pixel padding in SDF
 \n    float s = (32.0f/255.0f)*paintMat[0][0];  // 32/255 is STBTT pixel_dist_scale
 \n    //return sdfCov(texture2D(tex, st).r, s);  // single sample
 \n    s = 0.5f*s;  // we're sampling 4 0.5x0.5 subpixels
@@ -871,15 +844,16 @@ static int glnvg__renderCreate(void* uptr)
 \n      // Calculate gradient color using box gradient
 \n      vec2 pt = (paintMat * vec3(fpos,1.0)).xy;
 \n      float d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);
-\n      vec4 color = mix(innerCol,outerCol,d);
+\n      vec4 color = texType > 0 ? texture2D(tex, vec2(d,0)) : mix(innerCol,outerCol,d);
+\n      if (texType == 1) color = vec4(color.rgb*color.a, color.a);
 \n      // Combine alpha
 \n      result = color*(scissorMask(fpos)*coverage());
 \n    } else if (type == 4) {  // Image
 \n      // Calculate color from texture
 \n      vec2 pt = (paintMat * vec3(fpos,1.0)).xy / extent;
 \n      vec4 color = texture2D(tex, pt);
-\n      if (texType == 1) color = vec4(color.xyz*color.w,color.w);
-\n      else if (texType == 2) color = vec4(color.x);
+\n      if (texType == 1) color = vec4(color.rgb*color.a, color.a);
+\n      else if (texType == 2) color = vec4(color.r);
 \n      // Apply color tint and alpha.
 \n      color *= innerCol;
 \n      // Combine alpha
@@ -906,18 +880,18 @@ static int glnvg__renderCreate(void* uptr)
 
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
   int align = 4;
-  const char* shaderOpts = NULL;
+  const char* shaderOpts = "";
 
   glnvg__checkError(gl, "init");
   gl->renderMethod = NVGL_RENDER_FB_SWAP;  // default
 #if defined(GL_EXT_shader_framebuffer_fetch)
-  if (!(gl->flags & NVG_NO_FB_FETCH)) {
+  if (!(gl->flags & NVGL_NO_FB_FETCH)) {
     if (NVG_HAS_EXT(EXT_shader_framebuffer_fetch))
       gl->renderMethod = NVGL_RENDER_FB_FETCH;
   }
 #endif
 // image load/store is faster than FB fetch on desktop (at least Intel GPUs)
-  if(!(gl->flags & NVG_NO_IMG_ATOMIC)) {
+  if(!(gl->flags & NVGL_NO_IMG_ATOMIC)) {
 #ifdef GL_ARB_shader_image_load_store  // desktop GL only
     if(NVG_HAS_EXT(ARB_shader_image_load_store))
       gl->renderMethod = NVGL_RENDER_IMG_ATOMIC;
@@ -927,7 +901,7 @@ static int glnvg__renderCreate(void* uptr)
     //  apparently don't implement it correctly, so give priority to image load/store for now
     gl->renderMethod = NVGL_RENDER_IMG_ATOMIC;
 #else
-#define NVGL_NO_IMG_ATOMIC 1  // disable code if no possibility of support on current platform
+#define NANOVG_GL_NO_IMG_ATOMIC 1  // disable code if no possibility of support on current platform
 #endif
   }
 
@@ -941,8 +915,14 @@ static int glnvg__renderCreate(void* uptr)
     NVG_LOG("nvg2: no extensions in use\n");
   }
 
-  if (glnvg__createShader(&gl->shader, "shader", shaderHeader, shaderOpts, fillVertShader, fillFragShader) == 0)
-    return 0;
+  {
+    const char* sdfDef = (gl->flags & NVG_SDF_TEXT) ? "#define USE_SDF_TEXT 1\n" : "";
+    const char* vertsrc[] = { shaderHeader, shaderOpts, sdfDef, fillVertShader };
+    const char* fragsrc[] = { shaderHeader, shaderOpts, sdfDef, fillFragShader };
+
+    if(glnvg__createProgram(&gl->shader, vertsrc, 4, fragsrc, 4) == 0)
+      return 0;
+  }
 
   glnvg__checkError(gl, "uniform locations");
   glnvg__getUniforms(&gl->shader);
@@ -1231,11 +1211,21 @@ static void glnvg__triangles(GLNVGcontext* gl, GLNVGcall* call)
 
 static void glnvg__renderCancel(void* uptr)
 {
+  int i;
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
   gl->nverts = 0;
   gl->npaths = 0;
   gl->ncalls = 0;
   gl->nuniforms = 0;
+
+  // clear temporary textures (e.g., for which user didn't save handle)
+  for (i = 0; i < gl->ntextures; i++) {
+    if (gl->textures[i].flags & NVG_IMAGE_DISCARD) {
+      if (gl->textures[i].tex != 0 && (gl->textures[i].flags & NVG_IMAGE_NODELETE) == 0)
+        glDeleteTextures(1, &gl->textures[i].tex);
+      memset(&gl->textures[i], 0, sizeof(gl->textures[i]));
+    }
+  }
 }
 
 static GLenum glnvg_convertBlendFuncFactor(int factor)
@@ -1273,7 +1263,7 @@ static GLNVGblend glnvg__blendCompositeOperation(NVGcompositeOperationState op)
   return blend;
 }
 
-#ifndef NVGL_NO_IMG_ATOMIC
+#ifndef NANOVG_GL_NO_IMG_ATOMIC
 #ifdef GL_ES_VERSION_3_1
 #define glMemoryBarrier glMemoryBarrierByRegion
 #endif
@@ -1394,7 +1384,7 @@ static void glnvg__renderFlush(void* uptr)
     //  nvgEndFrame(), e.g., using nvgluCreateFramebuffer() and nvgluBindFramebuffer()
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl->texWinding, 0);
     glDrawBuffers(2, drawBuffers);
-#ifndef NVGL_NO_IMG_ATOMIC
+#ifndef NANOVG_GL_NO_IMG_ATOMIC
   } else if (gl->renderMethod == NVGL_RENDER_IMG_ATOMIC) {
     glBindImageTexture(0, gl->texWinding, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
     gl->imgWindingOffset = 0;
@@ -1460,7 +1450,7 @@ static void glnvg__renderFlush(void* uptr)
 #endif
   glnvg__checkError(gl, "renderFlush setup");
 
-#ifndef NVGL_NO_IMG_ATOMIC
+#ifndef NANOVG_GL_NO_IMG_ATOMIC
   if(gl->renderMethod == NVGL_RENDER_IMG_ATOMIC)
     glnvg__imgAtomicFlush(gl);
   else
@@ -1491,18 +1481,14 @@ static void glnvg__renderFlush(void* uptr)
   if (gl->renderMethod == NVGL_RENDER_FB_FETCH) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, 0, 0);
     glDrawBuffers(1, drawBuffers);
-#ifndef NVGL_NO_IMG_ATOMIC
+#ifndef NANOVG_GL_NO_IMG_ATOMIC
   } else if (gl->renderMethod == NVGL_RENDER_IMG_ATOMIC) {
     glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32I);
 #endif
   }
   glnvg__checkError(gl, "windingTex unbind");
 
-  // Reset calls
-  gl->nverts = 0;
-  gl->npaths = 0;
-  gl->ncalls = 0;
-  gl->nuniforms = 0;
+  glnvg__renderCancel(uptr);
 }
 
 static GLNVGcall* glnvg__allocCall(GLNVGcontext* gl)
@@ -1627,10 +1613,33 @@ static int glnvg__convertPaint(GLNVGcontext* gl, GLNVGcall* call, NVGpaint* pain
 
   memcpy(frag->extent, paint->extent, sizeof(frag->extent));
 
-  if (paint->image != 0) {
+  // texture used for images and complex gradients
+  if(paint->image != 0) {
     call->image = paint->image;
     tex = glnvg__findTexture(gl, paint->image);
     if (tex == NULL) return 0;
+#if NANOVG_GL_USE_UNIFORMBUFFER
+    if (tex->type == NVG_TEXTURE_RGBA)
+      frag->texType = (tex->flags & NVG_IMAGE_PREMULTIPLIED) ? 3 : 1;
+    else
+      frag->texType = 2;
+    #else
+    if (tex->type == NVG_TEXTURE_RGBA)
+      frag->texType = (tex->flags & NVG_IMAGE_PREMULTIPLIED) ? 3.0f : 1.0f;
+    else
+      frag->texType = 2.0f;
+#endif
+  }
+
+  if (paint->innerColor.c != paint->outerColor.c) {
+    call->fragType = NSVG_SHADER_FILLGRAD;
+    frag->radius = paint->radius;
+    frag->feather = paint->feather;
+    nvgTransformInverse(invxform, paint->xform);
+    glnvg__xformToMat3x4(frag->paintMat, invxform);
+  } else if (paint->image != 0) {
+    call->fragType = NSVG_SHADER_FILLIMG;
+    frag->radius = paint->radius + 0.5f;  // radius used for SDF text weight
     if ((tex->flags & NVG_IMAGE_FLIPY) != 0) {
       float m1[6], m2[6];
       nvgTransformTranslate(m1, 0.0f, frag->extent[1] * 0.5f);
@@ -1643,27 +1652,6 @@ static int glnvg__convertPaint(GLNVGcontext* gl, GLNVGcall* call, NVGpaint* pain
     } else {
       nvgTransformInverse(invxform, paint->xform);
     }
-    glnvg__xformToMat3x4(frag->paintMat, invxform);
-    call->fragType = NSVG_SHADER_FILLIMG;
-    frag->radius = paint->radius + 0.5f;  // radius used for SDF text weight
-
-#if NANOVG_GL_USE_UNIFORMBUFFER
-    if (tex->type == NVG_TEXTURE_RGBA)
-      frag->texType = (tex->flags & NVG_IMAGE_PREMULTIPLIED) ? 0 : 1;
-    else
-      frag->texType = 2;
-    #else
-    if (tex->type == NVG_TEXTURE_RGBA)
-      frag->texType = (tex->flags & NVG_IMAGE_PREMULTIPLIED) ? 0.0f : 1.0f;
-    else
-      frag->texType = 2.0f;
-#endif
-//		printf("frag->texType = %d\n", frag->texType);
-  } else if (paint->innerColor.c != paint->outerColor.c) {
-    call->fragType = NSVG_SHADER_FILLGRAD;
-    frag->radius = paint->radius;
-    frag->feather = paint->feather;
-    nvgTransformInverse(invxform, paint->xform);
     glnvg__xformToMat3x4(frag->paintMat, invxform);
   } else {
     call->fragType = NSVG_SHADER_FILLSOLID;
@@ -1821,6 +1809,7 @@ NVGcontext* nvglCreate(int flags)
   GLNVGcontext* gl = (GLNVGcontext*)malloc(sizeof(GLNVGcontext));
   if (gl == NULL) goto error;
   memset(gl, 0, sizeof(GLNVGcontext));
+  gl->flags = flags | NVG_IS_GPU;
 
   memset(&params, 0, sizeof(params));
   params.renderCreate = glnvg__renderCreate;
@@ -1835,9 +1824,8 @@ NVGcontext* nvglCreate(int flags)
   params.renderTriangles = glnvg__renderTriangles;
   params.renderDelete = glnvg__renderDelete;
   params.userPtr = gl;
-  params.flags = flags;
+  params.flags = gl->flags;
 
-  gl->flags = flags;
   ctx = nvgCreateInternal(&params);
   if (ctx == NULL) goto error;
   return ctx;

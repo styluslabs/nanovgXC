@@ -21,8 +21,10 @@ extern "C" {
 
 enum NVGLcreateFlags {
   // Flag indicating that additional debug checks are done.
-  NVG_DEBUG = 1<<2,  // This value is hardcoded in Write's config - don't change!
-  NVG_TILE_SIZE_MASK = 0x70  // 000 - default/auto
+  NVGL_DELETE_NO_GL = 1<<1,  // don't call GL functions when deleting
+  NVGL_DEBUG = 1<<2,  // This value is hardcoded in Write's config - don't change!
+  NVGL_DEFER_INIT = 1<<3,  // don't make any GL calls until (beginning of) first frame
+  NVGL_TILE_SIZE_MASK = 0x70  // 000 - default/auto
 };
 
 //#if defined NANOVG_GL2_IMPLEMENTATION
@@ -297,6 +299,7 @@ static GLNVGtexture* glnvg__allocTexture(GLNVGcontext* gl)
 static GLNVGtexture* glnvg__findTexture(GLNVGcontext* gl, int id)
 {
   int i;
+  if (!id) return NULL;
   for (i = 0; i < gl->ntextures; i++)
     if (gl->textures[i].id == id)
       return &gl->textures[i];
@@ -320,7 +323,7 @@ static int glnvg__deleteTexture(GLNVGcontext* gl, int id)
 static void glnvg__checkError(GLNVGcontext* gl, const char* str)
 {
   GLenum err;
-  if ((gl->flags & NVG_DEBUG) == 0) return;
+  if ((gl->flags & NVGL_DEBUG) == 0) return;
   while ((err = glGetError()) != GL_NO_ERROR) {
     NVG_LOG("Error 0x%08x after %s\n", err, str);
   }
@@ -333,7 +336,6 @@ static int glnvg__compileShader(GLuint shader, const char* source[], int nsource
   glCompileShader(shader);
   glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
   if(status != GL_TRUE) {
-    int ii;
     GLchar str[512+1];
     GLsizei len = 0;
     glGetShaderInfoLog(shader, 512, &len, str);
@@ -341,7 +343,7 @@ static int glnvg__compileShader(GLuint shader, const char* source[], int nsource
     NVG_LOG("Shader error:\n%s\n", str);
 #ifndef NDEBUG
     NVG_LOG("Shader source:\n");
-    for(ii = 0; ii < nsource; ++ii)
+    for(int ii = 0; ii < nsource; ++ii)
       NVG_LOG(source[ii]);
 #endif
     return 0;
@@ -442,10 +444,6 @@ static int glnvg__renderCreate(void* uptr)
   "#define USE_UNIFORMBUFFER 1\n"
 #else
   "#define UNIFORMARRAY_SIZE 11\n"
-#endif
-// append SDF text string
-#ifdef FONS_SDF
-  "#define USE_SDF_TEXT 1\n"
 #endif
   "\n";
 
@@ -613,7 +611,7 @@ static int glnvg__renderCreate(void* uptr)
 \n  float superSDF(sampler2D tex, vec2 st)
 \n  {
 \n    vec2 tex_wh = vec2(textureSize(tex, 0));  // convert from ivec2 to vec2
-\n    st = st + vec2(4.0)/tex_wh;  // account for 4 pixel padding in SDF
+\n    //st = st + vec2(4.0)/tex_wh;  // account for 4 pixel padding in SDF
 \n    float s = (32.0f/255.0f)*paintMat[0][0];  // 32/255 is STBTT pixel_dist_scale
 \n    //return sdfCov(texture2D(tex, st).r, s);  // single sample
 \n    s = 0.5f*s;  // we're sampling 4 0.5x0.5 subpixels
@@ -706,15 +704,16 @@ static int glnvg__renderCreate(void* uptr)
 \n      // Calculate gradient color using box gradient
 \n      vec2 pt = (paintMat * vec3(fpos,1.0)).xy;
 \n      float d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);
-\n      vec4 color = mix(innerCol,outerCol,d);
+\n      vec4 color = texType > 0 ? texture2D(imageTex, vec2(d,0)) : mix(innerCol,outerCol,d);
+\n      if (texType == 1) color = vec4(color.rgb*color.a, color.a);
 \n      // Combine alpha
 \n      result = color*(scissorMask(fpos)*cov);
 \n    } else if (type == 4) {  // Image
 \n      // Calculate color from texture
 \n      vec2 pt = (paintMat * vec3(fpos,1.0)).xy / extent;
 \n      vec4 color = texture2D(imageTex, pt);
-\n      if (texType == 1) color = vec4(color.xyz*color.w,color.w);
-\n      else if (texType == 2) color = vec4(color.x);
+\n      if (texType == 1) color = vec4(color.rgb*color.a,color.a);
+\n      else if (texType == 2) color = vec4(color.r);
 \n      // Apply color tint and alpha.
 \n      color *= innerCol;
 \n      // Combine alpha
@@ -733,12 +732,15 @@ static int glnvg__renderCreate(void* uptr)
 
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
   int align = 4;
-  const char* vertsrc[] = { shaderHeader, fillVertShader };
-  const char* fragsrc[] = { shaderHeader, fillFragShader };
+  int tileflag = (gl->flags & NVGL_TILE_SIZE_MASK) >> 4;
+  const char* sdfDef = (gl->flags & NVG_SDF_TEXT) ? "#define USE_SDF_TEXT 1\n" : "";
+  const char* vertsrc[] = { shaderHeader, sdfDef, fillVertShader };
+  const char* fragsrc[] = { shaderHeader, sdfDef, fillFragShader };
 
+  if (gl->flags & NVGL_DEFER_INIT) return 1;
   glnvg__checkError(gl, "init");
 
-  if(glnvg__createProgram(&gl->shader, vertsrc, 2, fragsrc, 2) == 0)
+  if(glnvg__createProgram(&gl->shader, vertsrc, 3, fragsrc, 3) == 0)
     return 0;
 
   glnvg__checkError(gl, "uniform locations");
@@ -765,8 +767,8 @@ static int glnvg__renderCreate(void* uptr)
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 
-  int tileflag = (gl->flags & NVG_TILE_SIZE_MASK) >> 4;
   gl->tilesize = tileflag > 0 ? 1 << (tileflag + 1) : 32;
+
   NVG_LOG("nvg2: GL vector texture renderer\n");
 
   // alloc framebuffer for winding accum; will be inited in renderViewport when viewport size is known
@@ -945,21 +947,37 @@ static void glnvg__setUniforms(GLNVGcontext* gl, int uniformOffset, int image)
   }
 }
 
+static void glnvg__renderCancel(void* uptr)
+{
+  int i;
+  GLNVGcontext* gl = (GLNVGcontext*)uptr;
+  gl->nverts = 0;
+  gl->nedges = 0;
+  gl->ncalls = 0;
+  gl->nuniforms = 0;
+
+  // clear temporary textures (e.g., for which user didn't save handle)
+  for (i = 0; i < gl->ntextures; i++) {
+    if (gl->textures[i].flags & NVG_IMAGE_DISCARD) {
+      if (gl->textures[i].tex != 0 && (gl->textures[i].flags & NVG_IMAGE_NODELETE) == 0)
+        glDeleteTextures(1, &gl->textures[i].tex);
+      memset(&gl->textures[i], 0, sizeof(gl->textures[i]));
+    }
+  }
+}
+
 static void glnvg__renderViewport(void* uptr, float width, float height, float devicePixelRatio)
 {
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
   gl->devicePixelRatio = devicePixelRatio;
   gl->view[0] = width;
   gl->view[1] = height;
-}
-
-static void glnvg__renderCancel(void* uptr)
-{
-  GLNVGcontext* gl = (GLNVGcontext*)uptr;
-  gl->nverts = 0;
-  gl->nedges = 0;
-  gl->ncalls = 0;
-  gl->nuniforms = 0;
+  if (gl->flags & NVGL_DEFER_INIT) {
+    gl->flags &= ~NVGL_DEFER_INIT;  // clear flag
+    glnvg__renderCreate(uptr);
+  }
+  // renderViewport is called at start of frame, so reset
+  glnvg__renderCancel(uptr);
 }
 
 static GLenum glnvg_convertBlendFuncFactor(int factor)
@@ -1026,12 +1044,6 @@ static void glnvg__renderFlush(void* uptr)
   //glDisable(GL_SCISSOR_TEST);
   //glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
-#if NANOVG_GL_USE_UNIFORMBUFFER
-  // Upload ubo for frag shaders
-  glBindBuffer(GL_UNIFORM_BUFFER, gl->fragBuf);
-  glBufferData(GL_UNIFORM_BUFFER, gl->nuniforms * gl->fragSize, gl->uniforms, GL_STREAM_DRAW);
-#endif
-
   // Upload vertex data
 #if defined NANOVG_GL3
   glBindVertexArray(gl->vertArr);
@@ -1059,7 +1071,9 @@ static void glnvg__renderFlush(void* uptr)
   glUniform1i(gl->shader.loc[GLNVG_LOC_EDGES], 1);  // edge data texture array
 
 #if NANOVG_GL_USE_UNIFORMBUFFER
+  // Upload ubo for frag shaders
   glBindBuffer(GL_UNIFORM_BUFFER, gl->fragBuf);
+  glBufferData(GL_UNIFORM_BUFFER, gl->nuniforms * gl->fragSize, gl->uniforms, GL_STREAM_DRAW);
 #endif
   glnvg__checkError(gl, "renderFlush setup");
 
@@ -1097,10 +1111,7 @@ static void glnvg__renderFlush(void* uptr)
   glnvg__checkError(gl, "renderFlush cleanup");
 
   // Reset calls
-  gl->nverts = 0;
-  gl->nedges = 0;
-  gl->ncalls = 0;
-  gl->nuniforms = 0;
+  //glnvg__renderCancel(uptr);  -- we now reset at start of frame to allow frame to be drawn more than once
 }
 
 static int glnvg__allocCalls(GLNVGcontext* gl, int n)
@@ -1218,10 +1229,25 @@ static int glnvg__convertPaint(GLNVGcontext* gl, GLNVGcall* call, NVGpaint* pain
 
   memcpy(frag->extent, paint->extent, sizeof(frag->extent));
 
-  if (paint->image != 0) {
+  // texture used for images and complex gradients
+  if(paint->image != 0) {
     call->image = paint->image;
     tex = glnvg__findTexture(gl, paint->image);
     if (tex == NULL) return -1;
+    if (tex->type == NVG_TEXTURE_RGBA)
+      frag->texType = (tex->flags & NVG_IMAGE_PREMULTIPLIED) ? 3 : 1;
+    else
+      frag->texType = 2;
+  }
+
+  if (paint->innerColor.c != paint->outerColor.c) {
+    call->fragType = GLNVG_FILL_GRAD;
+    frag->radius = paint->radius;
+    frag->feather = paint->feather;
+    nvgTransformInverse(invxform, paint->xform);
+    glnvg__xformToMat3x4(frag->paintMat, invxform);
+  } else if (paint->image != 0) {
+    call->fragType = GLNVG_FILL_IMG;
     if ((tex->flags & NVG_IMAGE_FLIPY) != 0) {
       float m1[6], m2[6];
       nvgTransformTranslate(m1, 0.0f, frag->extent[1] * 0.5f);
@@ -1235,18 +1261,7 @@ static int glnvg__convertPaint(GLNVGcontext* gl, GLNVGcall* call, NVGpaint* pain
       nvgTransformInverse(invxform, paint->xform);
     }
     glnvg__xformToMat3x4(frag->paintMat, invxform);
-    call->fragType = GLNVG_FILL_IMG;
     frag->radius = paint->radius + 0.5f;  // radius used for SDF text weight
-    if (tex->type == NVG_TEXTURE_RGBA)
-      frag->texType = (tex->flags & NVG_IMAGE_PREMULTIPLIED) ? 0 : 1;
-    else
-      frag->texType = 2;
-  } else if (paint->innerColor.c != paint->outerColor.c) {
-    call->fragType = GLNVG_FILL_GRAD;
-    frag->radius = paint->radius;
-    frag->feather = paint->feather;
-    nvgTransformInverse(invxform, paint->xform);
-    glnvg__xformToMat3x4(frag->paintMat, invxform);
   }
 
   // reuse uniforms from last call if identical
@@ -1366,7 +1381,7 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
 
     edgeidx = glnvg__allocEdges(gl, nedges);
     if (edgeidx < 0) goto error;
-    int triidx = glnvg__allocVerts(gl, 4*ncalls);
+    triidx = glnvg__allocVerts(gl, 4*ncalls);
     if (triidx < 0) goto error;
     // create call for each (non-empty) tile
     if(ncalls > 1 && glnvg__allocCalls(gl, ncalls-1) < 0) goto error;
@@ -1472,25 +1487,28 @@ static void glnvg__renderDelete(void* uptr)
   int i;
   if (gl == NULL) return;
 
-  glnvg__deleteShader(&gl->shader);
+  if (!(gl->flags & NVGL_DELETE_NO_GL)) {
+    glnvg__deleteShader(&gl->shader);
 
 #if NANOVG_GL3
 #if NANOVG_GL_USE_UNIFORMBUFFER
-  if (gl->fragBuf != 0)
-    glDeleteBuffers(1, &gl->fragBuf);
+    if (gl->fragBuf != 0)
+      glDeleteBuffers(1, &gl->fragBuf);
 #endif
-  if (gl->vertArr != 0)
-    glDeleteVertexArrays(1, &gl->vertArr);
+    if (gl->vertArr != 0)
+      glDeleteVertexArrays(1, &gl->vertArr);
 #endif
-  if (gl->vertBuf != 0)
-    glDeleteBuffers(1, &gl->vertBuf);
+    if (gl->vertBuf != 0)
+      glDeleteBuffers(1, &gl->vertBuf);
 
-  glDeleteTextures(1, &gl->texEdges);
+    glDeleteTextures(1, &gl->texEdges);
 
-  for (i = 0; i < gl->ntextures; i++) {
-    if (gl->textures[i].tex != 0 && (gl->textures[i].flags & NVG_IMAGE_NODELETE) == 0)
-      glDeleteTextures(1, &gl->textures[i].tex);
+    for (i = 0; i < gl->ntextures; i++) {
+      if (gl->textures[i].tex != 0 && (gl->textures[i].flags & NVG_IMAGE_NODELETE) == 0)
+        glDeleteTextures(1, &gl->textures[i].tex);
+    }
   }
+
   for(i = 0; i < gl->ntiles; ++i)
     free(gl->tiles[i].edges);
   free(gl->tiles);
@@ -1509,6 +1527,7 @@ NVGcontext* nvglCreate(int flags)
   GLNVGcontext* gl = (GLNVGcontext*)malloc(sizeof(GLNVGcontext));
   if (gl == NULL) goto error;
   memset(gl, 0, sizeof(GLNVGcontext));
+  gl->flags = flags | NVG_IS_GPU;
 
   memset(&params, 0, sizeof(params));
   params.renderCreate = glnvg__renderCreate;
@@ -1523,9 +1542,8 @@ NVGcontext* nvglCreate(int flags)
   params.renderTriangles = glnvg__renderTriangles;
   params.renderDelete = glnvg__renderDelete;
   params.userPtr = gl;
-  params.flags = flags;
+  params.flags = gl->flags;
 
-  gl->flags = flags;
   ctx = nvgCreateInternal(&params);
   if (ctx == NULL) goto error;
   return ctx;

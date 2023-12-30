@@ -1,8 +1,8 @@
 #include "threadpool.h"
 #include "threadutil.h"
 
-ThreadPool* threadPool = NULL;
-std::vector< std::future<void> > futures;
+static std::unique_ptr<ThreadPool> threadPool;
+static std::vector< std::future<void> > futures;
 
 
 int numCPUCores()
@@ -12,7 +12,7 @@ int numCPUCores()
 
 void poolInit(int nthreads)
 {
-  threadPool = new ThreadPool(nthreads);
+  threadPool.reset(new ThreadPool(nthreads));
 }
 
 void poolSubmit(void (*fn)(void*), void* arg)

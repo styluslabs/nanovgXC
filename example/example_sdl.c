@@ -39,6 +39,12 @@
 #include "perf.h"
 #define NVG_GL 1
 
+#define FONTSTASH_IMPLEMENTATION
+#include "fontstash.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #ifndef _WIN32
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wunused-variable"
@@ -118,13 +124,15 @@ int SDL_main(int argc, char* argv[])
 
   int nvgFlags = NVG_SRGB;  //NVG_NO_FB_FETCH  NVG_AUTOW_DEFAULT  NVGSW_PATHS_XC
 #ifndef NDEBUG
-  nvgFlags |= NVG_DEBUG;
+  nvgFlags |= NVGL_DEBUG;
 #endif
   for(int argi = 1; argi < argc; ++argi) {
     if(strcmp(argv[argi], "--flags") == 0 && ++argi < argc)
       nvgFlags = strtoul(argv[argi], 0, 0);  // support hex
     else if(strcmp(argv[argi], "--orflags") == 0 && ++argi < argc)
       nvgFlags |= strtoul(argv[argi], 0, 0);
+    else if(strcmp(argv[argi], "--sdf") == 0 && ++argi < argc)
+      nvgFlags |= atoi(argv[argi]) ? NVG_SDF_TEXT : 0;
     else if(strcmp(argv[argi], "--sw") == 0 && ++argi < argc)
       swRender = atoi(argv[argi]);
     else if(strcmp(argv[argi], "--fps") == 0 && ++argi < argc)
@@ -356,7 +364,7 @@ int SDL_main(int argc, char* argv[])
       if(testNum % 4 == 0) {
         if (swRender == 0)
           nvgluClear(nvgRGBAf(0.3f, 0.3f, 0.3f, 0.0f));
-        float s = DPI/192.f;
+        float s = (PLATFORM_MOBILE ? (fbWidth > fbHeight ? fbWidth : fbHeight)/11.2f : DPI)/192.f;
         nvgScale(vg, s, s);
         renderDemo(vg, mx, my, fbWidth/s, fbHeight/s, t - t0, blowup, &demoData);
       }
@@ -499,16 +507,14 @@ int SDL_main(int argc, char* argv[])
     }
 
   } // end while(run)
-
+  // cleanup
   freeDemoData(vg, &demoData);
+  swRender ? nvgswDelete(vg) : nvglDelete(vg);
 #ifdef NVG_GL
   if(useFramebuffer)
     nvgluDeleteFramebuffer(nvgFB);
-
-  if(sdlContext) {
-    nvglDelete(vg);
+  if(sdlContext)
     SDL_GL_DeleteContext(sdlContext);
-  }
 #endif
   SDL_Quit();
   return 0;

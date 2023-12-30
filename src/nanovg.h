@@ -19,6 +19,8 @@ extern "C" {
 
 typedef struct NVGcontext NVGcontext;
 
+typedef struct FONStextRow FONStextRow;  // include fontstash.h to use
+
 struct NVGcolor {
   union {
     unsigned int c;
@@ -118,24 +120,16 @@ struct NVGglyphPosition {
 };
 typedef struct NVGglyphPosition NVGglyphPosition;
 
-struct NVGtextRow {
-  const char* start;	// Pointer to the input text where the row starts.
-  const char* end;	// Pointer to the input text where the row ends (one past the last character).
-  const char* next;	// Pointer to the beginning of the next row.
-  float width;		// Logical width of the row.
-  float minx, maxx;	// Actual bounds of the row. Logical with and bounds can differ because of kerning and some parts over extending.
-};
-typedef struct NVGtextRow NVGtextRow;
-
 enum NVGimageFlags {
   NVG_IMAGE_GENERATE_MIPMAPS = 1<<0,  // Generate mipmaps during creation of the image.
   NVG_IMAGE_REPEATX          = 1<<1,  // Repeat image in X direction.
   NVG_IMAGE_REPEATY          = 1<<2,  // Repeat image in Y direction.
   NVG_IMAGE_FLIPY            = 1<<3,  // Flips (inverses) image in Y direction when rendered.
   NVG_IMAGE_PREMULTIPLIED    = 1<<4,  // Image data has premultiplied alpha.
-  NVG_IMAGE_NEAREST          = 1<<5,  // Image interpolation is Nearest instead Linear
+  NVG_IMAGE_NEAREST          = 1<<5,  // Image interpolation is Nearest instead of Linear
   NVG_IMAGE_SRGB             = 1<<6,  // Create SRGB texture for image - for use with SRGB framebuffer
   NVG_IMAGE_NOCOPY           = 1<<7,  // Don't make a copy of image data (SW renderer only)
+  NVG_IMAGE_DISCARD          = 1<<8,  // Delete texture after frame render
 };
 
 // Begin drawing a new frame
@@ -428,6 +422,10 @@ NVGpaint nvgRadialGradient(NVGcontext* ctx, float cx, float cy, float inr, float
 NVGpaint nvgImagePattern(NVGcontext* ctx, float ox, float oy, float ex, float ey,
              float angle, int image, float alpha);
 
+// Create a texture for rendering a gradient with nstops (>2) stops specified by stops and colors
+// returns an image handle which can be assigned to NVGpaint.image returned from nvg*Gradient functions
+int nvgMultiGradient(NVGcontext* ctx, int imageFlags, float* stops, NVGcolor* colors, int nstops);
+
 //
 // Scissoring
 //
@@ -629,7 +627,7 @@ void nvgTextMetrics(NVGcontext* ctx, float* ascender, float* descender, float* l
 // Breaks the specified text into lines. If end is specified only the sub-string will be used.
 // White space is stripped at the beginning of the rows, the text is split at word boundaries or when new-line characters are encountered.
 // Words longer than the max width are slit at nearest character (i.e. no hyphenation).
-int nvgTextBreakLines(NVGcontext* ctx, const char* string, const char* end, float breakRowWidth, NVGtextRow* rows, int maxRows);
+int nvgTextBreakLines(NVGcontext* ctx, const char* string, const char* end, float breakRowWidth, FONStextRow* rows, int maxRows);
 
 //
 // Internal Render API
@@ -642,6 +640,12 @@ enum NVGtexture {
 
 // renderer flags up from 0, nanovg.c flags down from 15; NVG_SRGB used by both
 enum NVGcreateFlags {
+  // flag to distinguish SW and GL renderers ... set by renderer, do not pass to create()
+  NVG_IS_GPU = 1 << 0,
+  // do not create fontstash in nvgCreate (to use w/o fontstash or to set later w/ nvgSetFontstash())
+  NVG_NO_FONTSTASH = 1 << 11,
+  // use SDF for text rendering (default is summed coverage method)
+  NVG_SDF_TEXT = 1 << 12,
   // always draw rotated text as paths (instead of using font atlas)
   NVG_ROTATED_TEXT_AS_PATHS = 1 << 13,
   // default to NVG_AUTOW instead of NVG_CCW
@@ -656,6 +660,7 @@ enum NVGpathFlags {
   NVG_PATH_NO_AA = 1 << 1,
   NVG_PATH_CONVEX = 1 << 2,
   NVG_PATH_XC = 1 << 3,  // request exact coverage rendering for renderers w/ alternative options
+  NVG_PATH_BLENDFUNC = 1 << 4,  // convenience flag to indicate blend function is not src over
 };
 
 struct NVGscissor {
@@ -702,6 +707,10 @@ typedef struct NVGparams NVGparams;
 // Constructor and destructor, called by the render back-end.
 NVGcontext* nvgCreateInternal(NVGparams* params);
 void nvgDeleteInternal(NVGcontext* ctx);
+
+// set fontstash (e.g. to allow use of shared fontstash)
+typedef struct FONScontext FONScontext;
+void nvgSetFontStash(NVGcontext* ctx, FONScontext* fs);
 
 NVGparams* nvgInternalParams(NVGcontext* ctx);
 

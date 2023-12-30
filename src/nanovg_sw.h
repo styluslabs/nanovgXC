@@ -8,6 +8,11 @@
 #ifndef NANOVG_SW_H
 #define NANOVG_SW_H
 
+#ifdef IDE_INCLUDES
+#define NANOVG_SW_IMPLEMENTATION
+#include "nanovg.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -81,7 +86,7 @@ struct SWNVGcall {
   int uniformOffset;
   int imgOffset;
   int bounds[4];
-  //GLNVGblend blendFunc;
+  NVGcompositeOperationState blendFunc;
   SWNVGtexture* tex;
 
   float scissorMat[6];
@@ -399,7 +404,6 @@ static void swnvg__blendLinear(unsigned char* dst, int cover, int cr, int cg, in
   unsigned int s2 = sRGBToLinear[cb];
   int srca = (cover * ca)/255;
   int ia = 255 - srca;
-  // src over blend - src RGB is already premultiplied by A, so only mul by cover
   int r = (srca*s0 + ia*d0)/255;
   int g = (srca*s1 + ia*d1)/255;
   int b = (srca*s2 + ia*d2)/255;
@@ -469,6 +473,41 @@ static void swnvg__lerpAndBlend(unsigned char* dst, unsigned char cover, SWNVGte
   swnvg__blend8888(dst, cover, c0, c1, c2, c3, linear);
 }
 
+static int swnvg__getBlendFactor(int factor, int srca, int dsta)
+{
+  switch(factor) {
+    case NVG_ZERO:                return 0;
+    case NVG_ONE:                 return 255;
+    case NVG_SRC_ALPHA:           return srca;
+    case NVG_ONE_MINUS_SRC_ALPHA: return 255 - srca;
+    case NVG_DST_ALPHA:           return dsta;
+    case NVG_ONE_MINUS_DST_ALPHA: return 255 - dsta;
+    default:                      return -255;
+  }
+}
+
+static void swnvg__blendWithFunc(NVGcompositeOperationState* op, unsigned char* dst, int cover, rgba32_t rgba, int linear)
+{
+  // TODO: support linear blending
+  int srca = (cover * COLOR3(rgba))/255;
+  int dsta = dst[3];
+  // get blend factors
+  int srcRGB = swnvg__getBlendFactor(op->srcRGB, srca, dsta);
+  int dstRGB = swnvg__getBlendFactor(op->dstRGB, srca, dsta);
+  int srcAlpha = swnvg__getBlendFactor(op->srcAlpha, srca, dsta);
+  int dstAlpha = swnvg__getBlendFactor(op->dstAlpha, srca, dsta);
+  // blend
+  int r = (srcRGB*COLOR0(rgba) + dstRGB*dst[0])/255;
+  int g = (srcRGB*COLOR1(rgba) + dstRGB*dst[1])/255;
+  int b = (srcRGB*COLOR2(rgba) + dstRGB*dst[2])/255;
+  int a = (srcAlpha*srca + dstAlpha*dst[3])/255;
+  // write
+  dst[0] = (unsigned char)r;
+  dst[1] = (unsigned char)g;
+  dst[2] = (unsigned char)b;
+  dst[3] = (unsigned char)a;
+}
+
 static void swnvg__scanlineSolid(unsigned char* dst, int count, unsigned char* cover, int x, int y, SWNVGcall* call)
 {
   int i;
@@ -480,7 +519,11 @@ static void swnvg__scanlineSolid(unsigned char* dst, int count, unsigned char* c
   // note r,g,b may not actually be R,G,B (in particular, R and G could be switched)
   if (call->type == SWNVG_PAINT_COLOR) {
     rgba32_t c = call->innerCol;
-    if(RGBA32_IS_OPAQUE(c)) {
+    if(call->flags & NVG_PATH_BLENDFUNC) {
+      for(i = 0; i < count; ++i, dst += 4)
+        swnvg__blendWithFunc(&call->blendFunc, dst, *cover++, c, linear);
+    }
+    else if(RGBA32_IS_OPAQUE(c)) {
       for(i = 0; i < count; ++i, dst += 4)
         swnvg__blendOpaque(dst, *cover++, c, linear);
     }
@@ -515,14 +558,14 @@ static void swnvg__scanlineSolid(unsigned char* dst, int count, unsigned char* c
     }
   } else if (call->type == SWNVG_PAINT_GRAD) {
     float qx, qy;
-    int cr0 = call->innerCol & 0xff;
-    int cg0 = (call->innerCol >> 8) & 0xff;
-    int cb0 = (call->innerCol >> 16) & 0xff;
-    int ca0 = (call->innerCol >> 24) & 0xff;
-    int cr1 = call->outerCol & 0xff;
-    int cg1 = (call->outerCol >> 8) & 0xff;
-    int cb1 = (call->outerCol >> 16) & 0xff;
-    int ca1 = (call->outerCol >> 24) & 0xff;
+    int cr0 = linear ? (int)sRGBToLinear[COLOR0(call->innerCol)] : COLOR0(call->innerCol);
+    int cg0 = linear ? (int)sRGBToLinear[COLOR1(call->innerCol)] : COLOR1(call->innerCol);
+    int cb0 = linear ? (int)sRGBToLinear[COLOR2(call->innerCol)] : COLOR2(call->innerCol);
+    int ca0 = COLOR3(call->innerCol);
+    int cr1 = linear ? (int)sRGBToLinear[COLOR0(call->outerCol)] : COLOR0(call->outerCol);
+    int cg1 = linear ? (int)sRGBToLinear[COLOR1(call->outerCol)] : COLOR1(call->outerCol);
+    int cb1 = linear ? (int)sRGBToLinear[COLOR2(call->outerCol)] : COLOR2(call->outerCol);
+    int ca1 = COLOR3(call->outerCol);
     for (i = 0; i < count; ++i) {
       // can't just step qx, qy due to numerical issues w/ linear gradient
       nvgTransformPoint(&qx, &qy, call->paintMat, x++, y);
@@ -530,12 +573,21 @@ static void swnvg__scanlineSolid(unsigned char* dst, int count, unsigned char* c
       float dy = fabsf(qy) - (call->extent[1] - call->radius);
       float d0 = swnvg__minf(swnvg__maxf(dx, dy), 0.0f)
           + swnvg__lengthf(swnvg__maxf(dx, 0.0f), swnvg__maxf(dy, 0.0f)) - call->radius;
-      float d = swnvg__clampf((d0 + call->feather*0.5f)/call->feather, 0.0f, 1.0f);
-      int cr = (int)(0.5f + cr0*(1.0f - d) + cr1*d);
-      int cg = (int)(0.5f + cg0*(1.0f - d) + cg1*d);
-      int cb = (int)(0.5f + cb0*(1.0f - d) + cb1*d);
-      int ca = (int)(0.5f + ca0*(1.0f - d) + ca1*d);
-      swnvg__blend8888(dst, *cover++, cr, cg, cb, ca, linear);
+      float d = (d0 + call->feather*0.5f)/call->feather;
+      if (call->tex) {
+        // texture for gradients with >2 stops
+        swnvg__lerpAndBlend(dst, *cover++, call->tex, d*call->tex->width, 0, linear);
+      } else {
+        d = swnvg__clampf(d, 0.0f, 1.0f);
+        int cr = (int)(0.5f + cr0*(1.0f - d) + cr1*d);
+        int cg = (int)(0.5f + cg0*(1.0f - d) + cg1*d);
+        int cb = (int)(0.5f + cb0*(1.0f - d) + cb1*d);
+        int ca = (int)(0.5f + ca0*(1.0f - d) + ca1*d);
+        if(linear)
+          swnvg__blend8888(dst, *cover++, linearToSRGB[cr], linearToSRGB[cg], linearToSRGB[cb], ca, linear);
+        else
+          swnvg__blend8888(dst, *cover++, cr, cg, cb, ca, linear);
+      }
       //qx += call->paintMat[0];  // instead of tf*(x+1, y)
       //qy += call->paintMat[1];
       dst += 4;
@@ -676,10 +728,11 @@ static unsigned char texFetch(SWNVGtexture* tex, int x, int y)
   return data[x + y*tex->width];
 }
 
-static float texFetchLerp(SWNVGtexture* tex, float ijx, float ijy, int ijminx, int ijminy, int ijmaxx, int ijmaxy)
+static float texFetchLerp(SWNVGtexture* tex, float ijx, float ijy)  //, int ijminx, int ijminy, int ijmaxx, int ijmaxy)
 {
-  int ij00x = swnvg__clampi((int)ijx, ijminx, ijmaxx), ij00y = swnvg__clampi((int)ijy, ijminy, ijmaxy);
-  int ij11x = swnvg__clampi((int)ijx + 1, ijminx, ijmaxx), ij11y = swnvg__clampi((int)ijy + 1, ijminy, ijmaxy);
+  //int ij00x = swnvg__clampi((int)ijx, ijminx, ijmaxx), ij00y = swnvg__clampi((int)ijy, ijminy, ijmaxy);
+  //int ij11x = swnvg__clampi((int)ijx + 1, ijminx, ijmaxx), ij11y = swnvg__clampi((int)ijy + 1, ijminy, ijmaxy);
+  int ij00x = (int)ijx, ij00y = (int)ijy, ij11x = (int)ijx + 1, ij11y = (int)ijy + 1;
   float t00 = texFetch(tex, ij00x, ij00y);
   float t10 = texFetch(tex, ij11x, ij00y);
   float t01 = texFetch(tex, ij00x, ij11y);
@@ -696,39 +749,44 @@ static float sdfCov(float D, float sdfscale, float sdfoffset)
   return D > 0.0f ? swnvg__clampf((D - 255.0f*0.5f)/sdfscale + sdfoffset, 0.0f, 1.0f) : 0.0f;
 }
 
-static float superSDF(SWNVGtexture* tex, float s, float dr, float ijx, float ijy, float dx, float dy, int ijminx, int ijminy, int ijmaxx, int ijmaxy)
+static float superSDF(SWNVGtexture* tex, float s, float dr, float ijx, float ijy, float dx, float dy) //, int ijminx, int ijminy, int ijmaxx, int ijmaxy)
 {
+  //int ij0x = swnvg__clampi((int)(ijx + 0.5f), ijminx, ijmaxx);
+  //int ij0y = swnvg__clampi((int)(ijy + 0.5f), ijminy, ijmaxy);
+  //float d = texFetch(tex, ij0x, ij0y);
+
   // check distance from center of nearest pixel and exit early if large enough
   // doesn't help at all for very small font sizes, but >50% for larger sizes
-  int ij0x = swnvg__clampi((int)(ijx + 0.5f), ijminx, ijmaxx);
-  int ij0y = swnvg__clampi((int)(ijy + 0.5f), ijminy, ijmaxy);
-  float d = texFetch(tex, ij0x, ij0y);
+  float d = texFetch(tex, (int)(ijx + 0.5f), (int)(ijy + 0.5f));
   float sd = (d - 255.0f*0.5f)/s + (dr - 0.5f);  // note we're still using the half pixel scale here
   if(sd < -1.415f) return 0;  // sqrt(2) ... verified experimentally
   if(sd > 1.415f) return 1.0f;
 
+  // prevent out-of-bounds read; note that GL SDF renderer does not clamp to glyph cell bounds either
+  if(ijx - dx < 0 || ijy - dy < 0 || ijx + dx + 1 >= tex->width || ijy + dy + 1 >= tex->height)
+    return sdfCov(texFetchLerp(tex, ijx, ijy), 2*s, dr);  // single sample
+
   //return sdfCov(texFetchLerp(tex, ijx, ijy, ijminx, ijminy, ijmaxx, ijmaxy), 2*s);  // single sample
-  float d11 = texFetchLerp(tex, ijx + dx, ijy + dy, ijminx, ijminy, ijmaxx, ijmaxy);
-  float d10 = texFetchLerp(tex, ijx - dx, ijy + dy, ijminx, ijminy, ijmaxx, ijmaxy);
-  float d01 = texFetchLerp(tex, ijx + dx, ijy - dy, ijminx, ijminy, ijmaxx, ijmaxy);
-  float d00 = texFetchLerp(tex, ijx - dx, ijy - dy, ijminx, ijminy, ijmaxx, ijmaxy);
+  float d11 = texFetchLerp(tex, ijx + dx, ijy + dy);  //, ijminx, ijminy, ijmaxx, ijmaxy);
+  float d10 = texFetchLerp(tex, ijx - dx, ijy + dy);  //, ijminx, ijminy, ijmaxx, ijmaxy);
+  float d01 = texFetchLerp(tex, ijx + dx, ijy - dy);  //, ijminx, ijminy, ijmaxx, ijmaxy);
+  float d00 = texFetchLerp(tex, ijx - dx, ijy - dy);  //, ijminx, ijminy, ijmaxx, ijmaxy);
   return 0.25f*(sdfCov(d11, s, dr) + sdfCov(d10, s, dr) + sdfCov(d01, s, dr) + sdfCov(d00, s, dr));
 }
 
-static void swnvg__rasterizeQuad(SWNVGthreadCtx* r, SWNVGcall* call, SWNVGtexture* tex, NVGvertex* v00, NVGvertex* v11)
+static void swnvg__rasterizeQuad(SWNVGthreadCtx* r, SWNVGcall* call, NVGvertex* v00, NVGvertex* v11)
 {
   SWNVGcontext* gl = r->context;
   int x, y;
-  float s00 = tex->width * v00->x1;
-  float t00 = tex->height * v00->y1;
+  float s00 = call->tex->width * v00->x1;
+  float t00 = call->tex->height * v00->y1;
   float ds = call->paintMat[0]/2;
   float dt = call->paintMat[3]/2;
-#ifdef FONS_SDF
-  float sdfoffset = call->radius + 0.5f;
-  float sdfscale = 0.5f * 32.0f*call->paintMat[0];  // 0.5 - we're sampling 4 0.5x0.5 subpixels
-  s00 += 4 + ds;  // account for 4 pixel padding in SDF
-  t00 += 4 + dt;
-#endif
+  float sdfoffset = 0, sdfscale = 0;  // init to suppress warning
+  if(gl->flags & NVG_SDF_TEXT) {
+    sdfoffset = call->radius + 0.5f;
+    sdfscale = 0.5f * 32.0f*call->paintMat[0];  // 0.5 - we're sampling 4 0.5x0.5 subpixels
+  }
 
   int linear = call->flags & NVG_SRGB;
   int cr = COLOR0(call->innerCol);
@@ -749,17 +807,17 @@ static void swnvg__rasterizeQuad(SWNVGthreadCtx* r, SWNVGcall* call, SWNVGtextur
   int xmax = swnvg__mini(swnvg__mini(call->bounds[2], r->x1), (int)(ceilf(v11->x0)));
   int ymax = swnvg__mini(swnvg__mini(call->bounds[3], r->y1), (int)(ceilf(v11->y0)));
   if(ymin > ymax || xmin > xmax) return;
-  float s0 = s00 - 2*ds*(v00->x0 - xmin);
-  float t = t00 - 2*dt*(v00->y0 - ymin);
+  float s0 = s00 - 2*ds*(v00->x0 - xmin - 0.25f);  // not sure why we need ds/2 shift to get correct pos
+  float t = t00 - 2*dt*(v00->y0 - ymin - 0.25f);
+  float cover;
   for(y = ymin; y <= ymax; ++y) {
     unsigned char* dst = &gl->bitmap[y*gl->stride + xmin*4];
     float s = s0;
     for(x = xmin; x <= xmax; ++x) {
-#ifdef FONS_SDF
-      float cover = superSDF(tex, sdfscale, sdfoffset, s, t, ds/2, dt/2, ijminx, ijminy, ijmaxx, ijmaxy);
-#else
-      float cover = summedTextCov(tex, s, t, ds, dt, ijminx, ijminy, ijmaxx, ijmaxy);
-#endif
+      if(gl->flags & NVG_SDF_TEXT)
+        cover = superSDF(call->tex, sdfscale, sdfoffset, s, t, ds/2, dt/2);  //, ijminx, ijminy, ijmaxx, ijmaxy);
+      else
+        cover = summedTextCov(call->tex, s, t, ds, dt, ijminx, ijminy, ijmaxx, ijmaxy);
       swnvg__blend8888(dst, (int)(255.0f*cover + 0.5f), cr, cg, cb, ca, linear);
       s += 2*ds;
       dst += 4;
@@ -799,6 +857,7 @@ static SWNVGtexture* swnvg__allocTexture(SWNVGcontext* gl)
 static SWNVGtexture* swnvg__findTexture(SWNVGcontext* gl, int id)
 {
   int i;
+  if (!id) return NULL;
   for (i = 0; i < gl->ntextures; i++)
     if (gl->textures[i].id == id)
       return &gl->textures[i];
@@ -808,13 +867,14 @@ static SWNVGtexture* swnvg__findTexture(SWNVGcontext* gl, int id)
 static int swnvg__renderCreate(void* uptr)
 {
   static int staticInited = 0;
+#if !defined(NDEBUG) || !defined(NVGSW_QUIET_FRAME)
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
+  NVG_LOG("nvg2: software renderer%s\n", gl->flags & NVGSW_PATHS_XC ? " (XC)" : "");
+#endif
   if(!staticInited) {
     swnvg__sRGBLUTCalc();
     staticInited = 1;
   }
-
-  NVG_LOG("nvg2: software renderer%s\n", gl->flags & NVGSW_PATHS_XC ? " (XC)" : "");
   return 1;
 }
 
@@ -882,6 +942,7 @@ static int swnvg__renderUpdateTexture(void* uptr, int image, int x, int y, int w
 {
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
   SWNVGtexture* tex = swnvg__findTexture(gl, image);
+  if(!tex) return 0;
   if(tex->type == NVG_TEXTURE_RGBA)
     swnvg__copyRGBAData(gl, tex, data);  // only full update for now
   else {
@@ -1190,10 +1251,9 @@ static void swnvg__rasterize(void* arg)
     if(call->bounds[0] <= r->x1 && call->bounds[1] <= r->y1 && call->bounds[2] >= r->x0 && call->bounds[3] >= r->y0) {
       call->tex = swnvg__findTexture(gl, call->image);
       if(call->type == SWNVG_PAINT_ATLAS) {
-        SWNVGtexture* tex = swnvg__findTexture(gl, call->image);
         NVGvertex* verts = &gl->verts[call->triangleOffset];
         for(j = 0; j < call->triangleCount; j += 2) {
-          swnvg__rasterizeQuad(r, call, tex, &verts[j], &verts[j+1]);
+          swnvg__rasterizeQuad(r, call, &verts[j], &verts[j+1]);
         }
       } else {
         if(call->flags & NVG_PATH_XC)
@@ -1225,6 +1285,14 @@ static void swnvg__renderFlush(void* uptr)
   else {
     swnvg__sortEdges(gl->threads);
     swnvg__rasterize(gl->threads);
+  }
+  // clear temporary textures (e.g., for which user didn't save handle)
+  for (i = 0; i < gl->ntextures; i++) {
+    if (gl->textures[i].flags & NVG_IMAGE_DISCARD) {
+      if(!(gl->textures[i].flags & NVG_IMAGE_NOCOPY))
+        free(gl->textures[i].data);
+      memset(&gl->textures[i], 0, sizeof(SWNVGtexture));
+    }
   }
   // Reset calls
   gl->nverts = 0;
@@ -1291,13 +1359,16 @@ static int swnvg__convertPaint(SWNVGcontext* gl, SWNVGcall* call, NVGpaint* pain
       float t0 = -scissor->extent[1], b0 = scissor->extent[1], t1, b1;
       nvgTransformPoint(&l1, &t1, scissor->xform, l0, t0);
       nvgTransformPoint(&r1, &b1, scissor->xform, r0, b0);
+      // account for negative scale!
+      l0 = swnvg__minf(l1, r1);  r0 = swnvg__maxf(l1, r1);
+      t0 = swnvg__minf(t1, b1);  b0 = swnvg__maxf(t1, b1);
       // should we round or do floor and ceil?
-      call->bounds[0] = swnvg__maxi(call->bounds[0], (int)(l1 + 0.5f));
-      call->bounds[1] = swnvg__maxi(call->bounds[1], (int)(t1 + 0.5f));
-      call->bounds[2] = swnvg__mini(call->bounds[2], (int)(r1 + 0.5f));
-      call->bounds[3] = swnvg__mini(call->bounds[3], (int)(b1 + 0.5f));
+      call->bounds[0] = swnvg__maxi(call->bounds[0], (int)(l0 + 0.5f));
+      call->bounds[1] = swnvg__maxi(call->bounds[1], (int)(t0 + 0.5f));
+      call->bounds[2] = swnvg__mini(call->bounds[2], (int)(r0 + 0.5f));
+      call->bounds[3] = swnvg__mini(call->bounds[3], (int)(b0 + 0.5f));
     }
-#ifndef NDEBUG
+#if !defined(NDEBUG) && !defined(NVGSW_QUIET_FRAME)
     // TODO: in this case we should at least transform all four corners of scissor box, then take the bbox of
     //  the four transformed points
     else
@@ -1305,28 +1376,17 @@ static int swnvg__convertPaint(SWNVGcontext* gl, SWNVGcall* call, NVGpaint* pain
 #endif
   }
 
-  if (paint->image != 0) {
-    call->image = paint->image;
-    call->radius = paint->radius;  // distance offset for SDF text
-    //tex = swnvg__findTexture(gl, paint->image);
-    //if (tex == NULL) return 0;
-    //if ((tex->flags & NVG_IMAGE_FLIPY) != 0) {
-    //  float m1[6], m2[6];
-    //  nvgTransformTranslate(m1, 0.0f, frag->extent[1] * 0.5f);
-    //  nvgTransformMultiply(m1, paint->xform);
-    //  nvgTransformScale(m2, 1.0f, -1.0f);
-    //  nvgTransformMultiply(m2, m1);
-    //  nvgTransformTranslate(m1, 0.0f, -frag->extent[1] * 0.5f);
-    //  nvgTransformMultiply(m1, m2);
-    //  nvgTransformInverse(invxform, m1);
-    //} else {
-      nvgTransformInverse(call->paintMat, paint->xform);
-    //}
-    call->type = SWNVG_PAINT_IMAGE;
-  } else if (paint->innerColor.c != paint->outerColor.c) {
+  if (paint->innerColor.c != paint->outerColor.c) {
     call->type = SWNVG_PAINT_GRAD;
+    call->image = paint->image;  // for gradients with >2 steps
     call->radius = paint->radius;
     call->feather = paint->feather;
+    nvgTransformInverse(call->paintMat, paint->xform);
+  } else if (paint->image != 0) {
+    call->type = SWNVG_PAINT_IMAGE;
+    call->image = paint->image;
+    call->radius = paint->radius;  // distance offset for SDF text
+    // TODO: support NVG_IMAGE_FLIPY
     nvgTransformInverse(call->paintMat, paint->xform);
   } else {
     call->type = SWNVG_PAINT_COLOR;
@@ -1334,7 +1394,7 @@ static int swnvg__convertPaint(SWNVGcontext* gl, SWNVGcall* call, NVGpaint* pain
   return 1;
 }
 
-static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation,
+static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperationState compOp,
                 NVGscissor* scissor, int flags, const float* bounds, const NVGpath* paths, int npaths)
 {
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
@@ -1348,6 +1408,11 @@ static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
   if (call == NULL) return;
 
   swnvg__convertPaint(gl, call, paint, scissor, flags);
+  call->blendFunc = compOp;
+  if(compOp.srcRGB != NVG_ONE || compOp.srcAlpha != NVG_ONE ||
+       compOp.dstRGB != NVG_ONE_MINUS_SRC_ALPHA || compOp.dstAlpha != NVG_ONE_MINUS_SRC_ALPHA) {
+    call->flags |= NVG_PATH_BLENDFUNC;
+  }
   if((gl->flags & NVGSW_PATHS_XC) && !(call->flags & NVG_PATH_NO_AA) && !(call->flags & NVG_PATH_EVENODD)) {
     call->flags |= NVG_PATH_XC;
     if(!gl->covtex) {
@@ -1380,7 +1445,7 @@ static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
   call->edgeCount = gl->nedges - call->edgeOffset;
 }
 
-static void swnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation,
+static void swnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOperationState compOp,
     NVGscissor* scissor, const NVGvertex* verts, int nverts)
 {
   int i;
@@ -1419,6 +1484,10 @@ static void swnvg__renderDelete(void* uptr)
     }
     free(gl->threads[ii].scanline);
     free(gl->threads[ii].lineLimits);
+  }
+  for (ii = 0; ii < gl->ntextures; ++ii) {
+    if (gl->textures[ii].id != 0 && (gl->textures[ii].flags & NVG_IMAGE_NOCOPY) == 0)
+      free(gl->textures[ii].data);
   }
   free(gl->threads);
   free(gl->covtex);

@@ -139,7 +139,7 @@ void nvgswuDeleteBlitter(NVGSWUblitter* ctx)
   glDeleteShader(ctx->frag);
 }
 
-#ifdef NVGSWU_GLES2
+#ifndef GL_RGBA8
 #define GL_RGBA8 GL_RGBA
 #endif
 

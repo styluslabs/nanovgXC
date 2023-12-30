@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include "nanovg.h"
+#include "fontstash.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
@@ -851,7 +852,7 @@ void freeDemoData(NVGcontext* vg, DemoData* data)
 
 void drawParagraph(NVGcontext* vg, float x, float y, float width, float height, float mx, float my)
 {
-  NVGtextRow rows[3];
+  FONStextRow rows[3];
   NVGglyphPosition glyphs[100];
   const char* text = "This is longer chunk of text.\n  \n  Would have used lorem ipsum but she    was busy jumping over the lazy dog with the fox and all the men who came to the aid of the party.🎉";
   const char* start;
@@ -879,7 +880,7 @@ void drawParagraph(NVGcontext* vg, float x, float y, float width, float height, 
   end = text + strlen(text);
   while ((nrows = nvgTextBreakLines(vg, start, end, width, rows, 3))) {
     for (i = 0; i < nrows; i++) {
-      NVGtextRow* row = &rows[i];
+      FONStextRow* row = &rows[i];
       int hit = mx > x && mx < (x+width) && my >= y && my < (y+lineh);
 
       nvgBeginPath(vg);
