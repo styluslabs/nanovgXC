@@ -15,6 +15,7 @@ struct NVGSWUblitter {
 typedef struct NVGSWUblitter NVGSWUblitter;
 
 NVGSWUblitter* nvgswuCreateBlitter();
+void nvgswuSetBlend(int blend);
 // width, height specify total size of pixels; x,y,w,h specify region to update
 void nvgswuBlit(NVGSWUblitter* ctx, void* pixels, int width, int height, int x, int y, int w, int h);
 void nvgswuDeleteBlitter(NVGSWUblitter* ctx);
@@ -139,6 +140,16 @@ void nvgswuDeleteBlitter(NVGSWUblitter* ctx)
   glDeleteShader(ctx->frag);
 }
 
+void nvgswuSetBlend(int blend)
+{
+  if(blend) {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  }
+  else
+    glDisable(GL_BLEND);
+}
+
 #ifndef GL_RGBA8
 #define GL_RGBA8 GL_RGBA
 #endif
@@ -157,9 +168,9 @@ void nvgswuBlit(NVGSWUblitter* ctx, void* pixels, int width, int height, int x, 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     ctx->width = width; ctx->height = height;
-  } else { // update existing texture
-    if(w <= 0) w = ctx->width;
-    if(h <= 0) h = ctx->height;
+  } else if(w > 0 && h > 0) { // update existing texture
+    //if(w <= 0) w = ctx->width;
+    //if(h <= 0) h = ctx->height;
     glBindTexture(GL_TEXTURE_2D, ctx->tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 #ifdef NVGSWU_GLES2
@@ -177,7 +188,12 @@ void nvgswuBlit(NVGSWUblitter* ctx, void* pixels, int width, int height, int x, 
 #endif
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
   }
+  else
+    glBindTexture(GL_TEXTURE_2D, ctx->tex);
 
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_STENCIL_TEST);
+  glDisable(GL_CULL_FACE);
   glViewport(0, 0, width, height);  // this is needed in case window size changes!
   glUseProgram(ctx->prog);
   glUniform1i(glGetUniformLocation(ctx->prog, "texFramebuffer"), 0);

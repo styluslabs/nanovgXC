@@ -1273,6 +1273,7 @@ static void swnvg__renderFlush(void* uptr)
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
   int i, nthreads = gl->xthreads*gl->ythreads;
   if (gl->ncalls == 0) return;
+  //NVG_LOG("renderFlush: %d calls, %d edges, %d quad verts\n", gl->ncalls, gl->nedges, gl->nverts);
   // we assume dest buffer has already been cleared -- for(i = 0; i < h; i++) memset(&dst[i*stride], 0, w*4);
   if(nthreads > 1) {
     for(i = 0; i < nthreads; ++i)

@@ -1,15 +1,14 @@
 # nanovgXC #
 
-nanovgXC is a small library for rendering vector graphics, based on [nanovg](https://github.com/memononen/nanovg).  The API is nearly identical to nanovg; the major user-facing changes are:
+nanovgXC is a small library for rendering vector graphics, based on [nanovg](https://github.com/memononen/nanovg) and under the same permissive zlib license.  The [API](/src/nanovg.h) is nearly identical to nanovg; the major user-facing changes are:
 
 * rendering of arbitrary paths with "exact coverage" antialiasing
   * it is not necessary to specify whether each subpath encloses a solid area or a hole
   * including very thin (a few pixels or less) filled paths, with which nanovg's antialiasing technique has some difficulties
 * support for both even-odd and non-zero fill rules
 * support for rendering text as paths
+* gradients with more than 2 stops
 * dashed strokes
-
-If none of the above are needed for your use case, nanovg may be a better choice.
 
 Cursory testing suggests that nanovgXC is several times faster than skia for GPU and multithreaded CPU rendering - perhaps [Cunningham's Law](https://meta.wikimedia.org/wiki/Cunningham%27s_Law) will inspire more careful testing.  See [example/skia-test/Makefile](/example/skia-test/Makefile).
 
@@ -22,9 +21,9 @@ Three rendering backends are available:
     * no extensions - switches between two framebuffers for each path (one for accumulating winding, one for final output).  Not as slow as it sounds on desktop GPUs - faster than software renderer for large paths.
 3. [nanovg_sw](/src/nanovg_sw.h): software renderer backend based on [nanosvg](https://github.com/memononen/nanosvg) and [stb_truetype](https://github.com/nothings/stb), supporting both "exact coverage" and sub-scanline rendering (see below).  Supports multi-threaded rendering, with each thread rendering a separate region of the output.  This significantly improves performance on desktop platforms, less so on mobile.
 
-Text is rendered by calculating a "summed" font atlas where each pixel stores the total coverage in the rectangle defined by that pixel and the origin (0,0).  When rendering, the texture coordinates for the corners of the current pixel are calculated and the corresponding values (s00, s01, s10, s11) from the summed font atlas are read with bilinear interpolation.  The pixel's coverage is then just s11 - s01 - s10 + s00.  Text at font sizes above a threshold set by `nvgAtlasTextThreshold()` is rendered directly as paths.  Text at all sizes below the threshold is rendered from the single atlas.
+By default, text is rendered using a "summed" font atlas where each pixel stores the total coverage in the rectangle defined by that pixel and the origin (0,0).  When rendering, the texture coordinates for the corners of the current pixel are calculated and the corresponding values (s00, s01, s10, s11) from the summed font atlas are read with bilinear interpolation.  The pixel's coverage is then just s11 - s01 - s10 + s00.  Text at font sizes above a threshold set by `nvgAtlasTextThreshold()` is rendered directly as paths.  Text at all sizes below the threshold is rendered from the single atlas.
 
-The original intent of this approach was to support continuous scaling of text without rebuilding a font atlas every frame and to allow arbitrary subpixel positioning of glyphs, but it could well be slower than just rebuilding the font atlas (and it is for the current software renderer implementation).  Signed distance field text rendering (w/ 4 samples per pixel) is also supported and provides similar quality along with support for adjusting text weight.  Build with `FONS_SDF` defined to use SDF text rendering.
+The original intent of this approach was to support continuous scaling of text and arbitrary subpixel positioning of glyphs with a single atlas, but it could well be slower than just rebuilding the font atlas (and it is for the current software renderer implementation).  Signed distance field text rendering (w/ 4 samples per pixel) is also supported and provides similar quality along with support for adjusting text weight.  Pass the `NVG_SDF_TEXT` flag to `nvglCreate` or `nvgswCreate` to use SDF text rendering.
 
 
 ### "Exact Coverage" ###

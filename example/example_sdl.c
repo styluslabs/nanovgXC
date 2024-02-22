@@ -77,10 +77,11 @@ int SDL_main(int argc, char* argv[])
   int testNum = 0;
   int dirty = 1;
   int contFPS = 1;
-  int useFramebuffer = 0;
+  int useFramebuffer = 1;
   int showCpuGraph = 0;
   int numThreads = 0;
   int testSet = 0;
+  int sRGBaware = 1;
   float shiftx = 0;
   float shifty = 0;
   float scale = 1.0f;
@@ -122,7 +123,7 @@ int SDL_main(int argc, char* argv[])
   SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
   //SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
 
-  int nvgFlags = NVG_SRGB;  //NVG_NO_FB_FETCH  NVG_AUTOW_DEFAULT  NVGSW_PATHS_XC
+  int nvgFlags = 0;  //NVG_NO_FB_FETCH  NVG_AUTOW_DEFAULT  NVGSW_PATHS_XC
 #ifndef NDEBUG
   nvgFlags |= NVGL_DEBUG;
 #endif
@@ -133,6 +134,10 @@ int SDL_main(int argc, char* argv[])
       nvgFlags |= strtoul(argv[argi], 0, 0);
     else if(strcmp(argv[argi], "--sdf") == 0 && ++argi < argc)
       nvgFlags |= atoi(argv[argi]) ? NVG_SDF_TEXT : 0;
+    else if(strcmp(argv[argi], "--srgb") == 0 && ++argi < argc)
+      sRGBaware = atoi(argv[argi]);
+    else if(strcmp(argv[argi], "--fb") == 0 && ++argi < argc)
+      useFramebuffer = atoi(argv[argi]);
     else if(strcmp(argv[argi], "--sw") == 0 && ++argi < argc)
       swRender = atoi(argv[argi]);
     else if(strcmp(argv[argi], "--fps") == 0 && ++argi < argc)
@@ -146,13 +151,14 @@ int SDL_main(int argc, char* argv[])
       testNum = 3;  // if svg file specified, show it immediately
     }
   }
-  if(nvgFlags & NVG_SRGB) {
+  if(sRGBaware) {
+    nvgFlags |= NVG_SRGB;
     fbFlags |= NVG_IMAGE_SRGB;
     SDL_GL_SetAttribute(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, swRender ? 0 : 1);  // needed for sRGB on iOS
   }
 
   sdlWindow = SDL_CreateWindow("NanoVG SDL", 0, 0, 1000, 600,
-      SDL_WINDOW_RESIZABLE|SDL_WINDOW_MAXIMIZED|(swRender ? 0 : SDL_WINDOW_OPENGL)|SDL_WINDOW_ALLOW_HIGHDPI);
+      SDL_WINDOW_RESIZABLE|SDL_WINDOW_MAXIMIZED|(swRender == 1 ? 0 : SDL_WINDOW_OPENGL)|SDL_WINDOW_ALLOW_HIGHDPI);
   if (!sdlWindow) {
     SDL_Quit();
     return -1;
@@ -214,7 +220,6 @@ int SDL_main(int argc, char* argv[])
     //GLint fbSDL = 0;
     //glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fbSDL);
 
-    useFramebuffer = 1;
     if(useFramebuffer) {
       nvgFB = nvgluCreateFramebuffer(vg, 0, 0, NVGLU_NO_NVG_IMAGE | fbFlags);
       nvgluSetFramebufferSRGB(fbFlags & NVG_IMAGE_SRGB);
@@ -288,7 +293,7 @@ int SDL_main(int argc, char* argv[])
     if (swRender == 0) {
 #ifdef NVG_GL
       SDL_GL_GetDrawableSize(sdlWindow, &fbWidth, &fbHeight);
-      if(useFramebuffer) {
+      if(nvgFB) {
         prevFBO = nvgluBindFramebuffer(nvgFB);
         nvgluSetFramebufferSize(nvgFB, fbWidth, fbHeight, fbFlags);
       }
@@ -401,7 +406,7 @@ int SDL_main(int argc, char* argv[])
     }
 
 #ifdef NVG_GL
-    if (useFramebuffer)
+    if(nvgFB)
       nvgluBlitFramebuffer(nvgFB, prevFBO);  // blit to prev FBO and rebind it
 #endif
 
@@ -511,7 +516,7 @@ int SDL_main(int argc, char* argv[])
   freeDemoData(vg, &demoData);
   swRender ? nvgswDelete(vg) : nvglDelete(vg);
 #ifdef NVG_GL
-  if(useFramebuffer)
+  if(nvgFB)
     nvgluDeleteFramebuffer(nvgFB);
   if(sdlContext)
     SDL_GL_DeleteContext(sdlContext);

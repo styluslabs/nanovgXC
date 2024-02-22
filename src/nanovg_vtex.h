@@ -769,10 +769,7 @@ static int glnvg__renderCreate(void* uptr)
 
   gl->tilesize = tileflag > 0 ? 1 << (tileflag + 1) : 32;
 
-  NVG_LOG("nvg2: GL vector texture renderer\n");
-
-  // alloc framebuffer for winding accum; will be inited in renderViewport when viewport size is known
-  //glGenFramebuffers(1, &gl->fbWinding);
+  NVG_LOG("nvg2: GL vector texture renderer (%d x %d)\n", gl->tilesize, gl->tilesize);
   glnvg__checkError(gl, "create done");
   glFinish();
   return 1;

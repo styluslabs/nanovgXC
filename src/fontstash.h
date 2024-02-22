@@ -671,7 +671,6 @@ int fonsAddFallbackFont(FONScontext* stash, int base, int fallback)
 
 float fonsEmSizeToSize(FONSstate* state, float emsize)
 {
-  float s = 0;
   FONScontext* stash = state->context;
   FONSfont* font;
   if(stash == NULL) return 0;
@@ -757,7 +756,7 @@ static unsigned char* fons__readFile(const char* path, int* sizeout)
   data = (unsigned char*)malloc(dataSize);
   if (data == NULL) goto error;
   nread = fread(data, 1, dataSize, fp);
-  if (nread != dataSize) goto error;
+  if ((int)nread != dataSize) goto error;
   fclose(fp);
   *sizeout = dataSize;
   return data;
@@ -1384,19 +1383,19 @@ int fonsResetAtlas(FONScontext* stash, int width, int height, int atlasFontPx)
 // moved here from nanovg.c
 int fonsBreakLines(FONSstate* state, const char* string, const char* end, float breakRowWidth, FONStextRow* rows, int maxRows)
 {
-  enum CodepointType { FONS_SPACE, FONS_NEWLINE, FONS_CHAR, FONS_CJK_CHAR };
+  enum CodepointType { FONS_SPACE, FONS_NEWLINE, FONS_CHAR, FONS_CJK_CHAR, FONS_DASH };
   FONStextIter iter;
   FONSquad q;
   int nrows = 0;
-  float rowStartX = 0;
+  float rowStartX = 0;  // absolute
   float rowWidth = 0;
-  float rowMinX = 0;
-  float rowMaxX = 0;
+  float rowMinX = 0;  // relative to rowStartX
+  float rowMaxX = 0;  // relative to rowStartX
   const char* rowStart = NULL;
   const char* rowEnd = NULL;
   const char* wordStart = NULL;
-  float wordStartX = 0;
-  float wordMinX = 0;
+  float wordStartX = 0;  // absolute
+  float wordMinX = 0;  // absolute
   float wordMinY = 1e6, wordMaxY = -1e6, rowMinY = 1e6, rowMaxY = -1e6;
   const char* breakEnd = NULL;
   float breakWidth = 0;
@@ -1434,6 +1433,9 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
         break;
       case 0x0085:	// NEL
         type = FONS_NEWLINE;
+        break;
+      case 45:    // breakable and printable chars
+        type = FONS_DASH;
         break;
       default:
         if ((iter.codepoint >= 0x4E00 && iter.codepoint <= 0x9FFF) ||
@@ -1479,7 +1481,7 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
     } else {
       if (rowStart == NULL) {
         // Skip white space until the beginning of the line
-        if (type == FONS_CHAR || type == FONS_CJK_CHAR) {
+        if (type == FONS_CHAR || type == FONS_CJK_CHAR || type == FONS_DASH) {
           // The current char is the row so far
           rowStartX = iter.x;
           rowStart = iter.str;
@@ -1489,7 +1491,7 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
           rowMaxX = q.x1 - rowStartX;
           wordStart = iter.str;
           wordStartX = iter.x;
-          wordMinX = q.x0 - rowStartX;
+          wordMinX = q.x0; // - rowStartX;
           // Set null break point
           breakEnd = rowStart;
           breakWidth = 0.0;
@@ -1503,8 +1505,64 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
         float nextWidth = iter.nextx - rowStartX;
         ++rowChars;
 
+        // track last beginning of a word
+        if (((ptype == FONS_SPACE || ptype == FONS_DASH) && type == FONS_CHAR) || type == FONS_CJK_CHAR) {
+          wordStart = iter.str;
+          wordStartX = iter.x;
+          wordMinX = q.x0;
+        }
+
         // track last non-white space character
-        if (type == FONS_CHAR || type == FONS_CJK_CHAR) {
+        if (type == FONS_CHAR || type == FONS_CJK_CHAR || type == FONS_DASH) {
+          // Break to new line when a character is beyond break width.
+          if (nextWidth > breakRowWidth || rowChars > maxChars) {
+            if (breakEnd == rowStart) {
+              // The current word is longer than the row length, just break it from here.
+              rows[nrows].start = rowStart;
+              rows[nrows].end = iter.str;
+              rows[nrows].width = rowWidth;
+              rows[nrows].minx = rowMinX;
+              rows[nrows].maxx = rowMaxX;
+              rows[nrows].next = iter.str;
+              rows[nrows].miny = wordMinY;
+              rows[nrows].maxy = wordMaxY;
+              if (++nrows >= maxRows)
+                return nrows;
+              rowStartX = iter.x;
+              rowStart = iter.str;
+              rowMinX = q.x0 - rowStartX;
+              wordStart = iter.str;
+              wordStartX = iter.x;
+              wordMinX = q.x0;
+              // reset Y
+              rowMinY = wordMinY = q.y0;
+              rowMaxY = wordMaxY = q.y1;
+            } else {
+              // Break the line from the end of the last word, and start new line from the beginning of the new.
+              rows[nrows].start = rowStart;
+              rows[nrows].end = breakEnd;
+              rows[nrows].width = breakWidth;
+              rows[nrows].minx = rowMinX;
+              rows[nrows].maxx = breakMaxX;
+              rows[nrows].next = wordStart;
+              rows[nrows].miny = rowMinY;
+              rows[nrows].maxy = rowMaxY;
+              if (++nrows >= maxRows)
+                return nrows;
+              rowStartX = wordStartX;
+              rowStart = wordStart;
+              rowMinX = wordMinX - rowStartX;
+              // current word will be on next row, so don't touch wordMin/MaxY
+              rowMinY = wordMinY;
+              rowMaxY = wordMaxY;
+              // No change to the word start
+            }
+            // Set null break point
+            breakEnd = rowStart;
+            breakWidth = 0.0;
+            breakMaxX = 0.0;
+            rowChars = 0;
+          }
           rowEnd = iter.next;
           rowWidth = iter.nextx - rowStartX;
           rowMaxX = q.x1 - rowStartX;
@@ -1512,8 +1570,10 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
           wordMinY = fons__minf(wordMinY, q.y0);
           wordMaxY = fons__maxf(wordMaxY, q.y1);
         }
+
         // track last end of a word
-        if (((ptype == FONS_CHAR || ptype == FONS_CJK_CHAR) && type == FONS_SPACE) || type == FONS_CJK_CHAR) {
+        if (((ptype == FONS_CHAR || ptype == FONS_CJK_CHAR) && type == FONS_SPACE)
+            || type == FONS_CJK_CHAR || ptype == FONS_DASH) {
           breakEnd = iter.str;
           breakWidth = rowWidth;
           breakMaxX = rowMaxX;
@@ -1523,90 +1583,22 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
           wordMinY = 1e6;
           wordMaxY = -1e6;
         }
-        // track last beginning of a word
-        if ((ptype == FONS_SPACE && (type == FONS_CHAR || type == FONS_CJK_CHAR)) || type == FONS_CJK_CHAR) {
-          wordStart = iter.str;
-          wordStartX = iter.x;
-          wordMinX = q.x0 - rowStartX;
-        }
-
-        // Break to new line when a character is beyond break width.
-        if ((type == FONS_CHAR || type == FONS_CJK_CHAR) && (nextWidth > breakRowWidth || rowChars > maxChars)) {
-          // The run length is too long, need to break to new line.
-          if (breakEnd == rowStart) {
-            // The current word is longer than the row length, just break it from here.
-            rows[nrows].start = rowStart;
-            rows[nrows].end = iter.str;
-            rows[nrows].width = rowWidth;
-            rows[nrows].minx = rowMinX;
-            rows[nrows].maxx = rowMaxX;
-            rows[nrows].next = iter.str;
-            rows[nrows].miny = wordMinY;
-            rows[nrows].maxy = wordMaxY;
-            nrows++;
-            if (nrows >= maxRows)
-              return nrows;
-            rowStartX = iter.x;
-            rowStart = iter.str;
-            rowEnd = iter.next;
-            rowWidth = iter.nextx - rowStartX;
-            rowMinX = q.x0 - rowStartX;
-            rowMaxX = q.x1 - rowStartX;
-            wordStart = iter.str;
-            wordStartX = iter.x;
-            wordMinX = q.x0 - rowStartX;
-            // reset Y
-            wordMinY = rowMinY = 1e6;
-            wordMaxY = rowMaxY = -1e6;
-          } else {
-            // Break the line from the end of the last word, and start new line from the beginning of the new.
-            rows[nrows].start = rowStart;
-            rows[nrows].end = breakEnd;
-            rows[nrows].width = breakWidth;
-            rows[nrows].minx = rowMinX;
-            rows[nrows].maxx = breakMaxX;
-            rows[nrows].next = wordStart;
-            rows[nrows].miny = rowMinY;
-            rows[nrows].maxy = rowMaxY;
-            nrows++;
-            if (nrows >= maxRows)
-              return nrows;
-            rowStartX = wordStartX;
-            rowStart = wordStart;
-            rowEnd = iter.next;
-            rowWidth = iter.nextx - rowStartX;
-            rowMinX = wordMinX;
-            rowMaxX = q.x1 - rowStartX;
-            // current word will be on next row, so don't touch wordMin/MaxY
-            rowMinY = 1e6;
-            rowMaxY = -1e6;
-            // No change to the word start
-          }
-          // Set null break point
-          breakEnd = rowStart;
-          breakWidth = 0.0;
-          breakMaxX = 0.0;
-          rowChars = 0;
-        }
       }
     }
-
     pcodepoint = iter.codepoint;
     ptype = type;
   }
 
   // Break the line from the end of the last word, and start new line from the beginning of the new.
   if (rowStart != NULL) {
-    rowMinY = fons__minf(rowMinY, wordMinY);
-    rowMaxY = fons__maxf(rowMaxY, wordMaxY);
     rows[nrows].start = rowStart;
     rows[nrows].end = rowEnd;
     rows[nrows].width = rowWidth;
     rows[nrows].minx = rowMinX;
     rows[nrows].maxx = rowMaxX;
     rows[nrows].next = end;
-    rows[nrows].miny = rowMinY;
-    rows[nrows].maxy = rowMaxY;
+    rows[nrows].miny = fons__minf(rowMinY, wordMinY);
+    rows[nrows].maxy = fons__maxf(rowMaxY, wordMaxY);
     nrows++;
   }
   return nrows;
