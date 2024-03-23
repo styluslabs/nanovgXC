@@ -321,8 +321,40 @@ void nvgDeleteInternal(NVGcontext* ctx)
   free(ctx);
 }
 
+static void nvg__freeFontImages(NVGcontext* ctx)
+{
+  if (ctx->fontImageIdx > 0) {
+    // fix from https://github.com/memononen/nanovg/pull/626 has been applied
+    int fontImage = ctx->fontImages[ctx->fontImageIdx];
+    int i, j, iw, ih;
+    // delete images that smaller than current one
+    if (fontImage == 0)
+      return;
+    ctx->fontImages[ctx->fontImageIdx] = 0;
+    nvgImageSize(ctx, fontImage, &iw, &ih);
+    for (i = j = 0; i < ctx->fontImageIdx; i++) {
+      if (ctx->fontImages[i] != 0) {
+        int nw, nh;
+        int image = ctx->fontImages[i];
+        ctx->fontImages[i] = 0;
+        nvgImageSize(ctx, image, &nw, &nh);
+        if (nw < iw || nh < ih)
+          nvgDeleteImage(ctx, image);
+        else
+          ctx->fontImages[j++] = image;
+      }
+    }
+    // make current font image to first
+    ctx->fontImages[j] = ctx->fontImages[0];
+    ctx->fontImages[0] = fontImage;
+    ctx->fontImageIdx = 0;
+  }
+}
+
 void nvgBeginFrame(NVGcontext* ctx, float windowWidth, float windowHeight, float devicePixelRatio)
 {
+  // moved from end of nvgEndFrame()
+  nvg__freeFontImages(ctx);
   ctx->nstates = 0;
   nvgSave(ctx);
   nvgReset(ctx);
@@ -340,31 +372,7 @@ void nvgCancelFrame(NVGcontext* ctx)
 void nvgEndFrame(NVGcontext* ctx)
 {
   ctx->params.renderFlush(ctx->params.userPtr);
-  if (ctx->fontImageIdx > 0) {
-    int fontImage = ctx->fontImages[ctx->fontImageIdx];
-    int i, j, iw, ih;
-    // delete images that smaller than current one
-    if (fontImage == 0)
-      return;
-    nvgImageSize(ctx, fontImage, &iw, &ih);
-    for (i = j = 0; i < ctx->fontImageIdx; i++) {
-      if (ctx->fontImages[i] != 0) {
-        int nw, nh;
-        nvgImageSize(ctx, ctx->fontImages[i], &nw, &nh);
-        if (nw < iw || nh < ih)
-          nvgDeleteImage(ctx, ctx->fontImages[i]);
-        else
-          ctx->fontImages[j++] = ctx->fontImages[i];
-      }
-    }
-    // make current font image to first
-    ctx->fontImages[j++] = ctx->fontImages[0];
-    ctx->fontImages[0] = fontImage;
-    ctx->fontImageIdx = 0;
-    // clear all images after j
-    for (i = j; i < NVG_MAX_FONTIMAGES; i++)
-      ctx->fontImages[i] = 0;
-  }
+  //nvg__freeFontImages(ctx);
 }
 
 // Color
