@@ -661,6 +661,7 @@ enum NVGpathFlags {
   NVG_PATH_CONVEX = 1 << 2,
   NVG_PATH_XC = 1 << 3,  // request exact coverage rendering for renderers w/ alternative options
   NVG_PATH_BLENDFUNC = 1 << 4,  // convenience flag to indicate blend function is not src over
+  NVG_PATH_SCISSOR = 1 << 5,  // convenience flag to indicate non-trivial scissor (rotate or skew)
 };
 
 struct NVGscissor {

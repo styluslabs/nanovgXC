@@ -512,10 +512,17 @@ static void swnvg__scanlineSolid(unsigned char* dst, int count, unsigned char* c
 {
   int i;
   int linear = call->flags & NVG_SRGB ? 1 : 0;
-  //nvgTransformPoint(&qx, &qy, call->scissorMat, x, y);
-  //float ssx = 0.5f - (fabsf(qx) - call->scissorExt[0])*call->scissorScale[0];
-  //float ssy = 0.5f - (fabsf(qy) - call->scissorExt[1])*call->scissorScale[1];
-  //float sscover = swnvg__clampf(ssx, 0.0f, 1.0f) * swnvg__clampf(ssy, 0.0f, 1.0f);
+  if(call->flags & NVG_PATH_SCISSOR) {
+    // apply scissor factor to coverage for non-trivial (i.e. rotated or skewed) scissor
+    float qx, qy, ssx, ssy, sscover;
+    for(i = 0; i < count; ++i) {
+      nvgTransformPoint(&qx, &qy, call->scissorMat, x + i, y);
+      ssx = 0.5f - (fabsf(qx) - call->scissorExt[0])*call->scissorScale[0];
+      ssy = 0.5f - (fabsf(qy) - call->scissorExt[1])*call->scissorScale[1];
+      sscover = swnvg__clampf(ssx, 0.0f, 1.0f) * swnvg__clampf(ssy, 0.0f, 1.0f);
+      cover[i] = (unsigned char)(cover[i] * sscover + 0.5f);
+    }
+  }
   // note r,g,b may not actually be R,G,B (in particular, R and G could be switched)
   if (call->type == SWNVG_PAINT_COLOR) {
     rgba32_t c = call->innerCol;
@@ -1076,6 +1083,7 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
   // fill
   int* lims = &r->lineLimits[2*(yb0 - r->y0)];
   int linear = call->flags & NVG_SRGB ? 1 : 0;
+  int complex = call->type != SWNVG_PAINT_COLOR || call->flags & NVG_PATH_SCISSOR || call->flags & NVG_PATH_BLENDFUNC;
   rgba32_t c = call->innerCol;
   for(iy = yb0; iy <= yb1; ++iy) {
     float cover = 0;
@@ -1086,7 +1094,7 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
     lims[0] = gl->width; lims[1] = 0;  // reset limits for this scanline
     lims += 2;
 
-    if (call->type == SWNVG_PAINT_COLOR) {
+    if (!complex) {
       // handle solid color directly for better performance
       if(RGBA32_IS_OPAQUE(c)) {
         for(i = 0; i < count; ++i, ++dcover, dst += 4) {
@@ -1369,12 +1377,14 @@ static int swnvg__convertPaint(SWNVGcontext* gl, SWNVGcall* call, NVGpaint* pain
       call->bounds[2] = swnvg__mini(call->bounds[2], (int)(r0 + 0.5f));
       call->bounds[3] = swnvg__mini(call->bounds[3], (int)(b0 + 0.5f));
     }
-#if !defined(NDEBUG) && !defined(NVGSW_QUIET_FRAME)
-    // TODO: in this case we should at least transform all four corners of scissor box, then take the bbox of
-    //  the four transformed points
-    else
-      NVG_LOG("nanovg_sw only supports axis aligned scissor!\n");
-#endif
+    else {
+      call->flags |= NVG_PATH_SCISSOR;
+      nvgTransformInverse(call->scissorMat, scissor->xform);
+      call->scissorExt[0] = scissor->extent[0];
+      call->scissorExt[1] = scissor->extent[1];
+      call->scissorScale[0] = sqrtf(scissor->xform[0]*scissor->xform[0] + scissor->xform[2]*scissor->xform[2]);  //*gl->devicePixelRatio;
+      call->scissorScale[1] = sqrtf(scissor->xform[1]*scissor->xform[1] + scissor->xform[3]*scissor->xform[3]);  //*gl->devicePixelRatio;
+    }
   }
 
   if (paint->innerColor.c != paint->outerColor.c) {
