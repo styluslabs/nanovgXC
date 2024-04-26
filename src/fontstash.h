@@ -42,10 +42,6 @@ enum FONSerrorCode {
   FONS_ATLAS_FULL = 1,
   // Scratch memory used to render glyphs is full, requested size reported in 'val', you may need to bump up FONS_SCRATCH_BUF_SIZE.
   FONS_SCRATCH_FULL = 2,
-  // Calls to fonsPushState has created too large stack, if you need deep state stack bump up FONS_MAX_STATES.
-  FONS_STATES_OVERFLOW = 3,
-  // Trying to pop too many states fonsPopState().
-  FONS_STATES_UNDERFLOW = 4,
 };
 
 struct FONSparams {
@@ -56,6 +52,11 @@ struct FONSparams {
   //  for GPU; atlasBlockHeight should be set to the height of these textures so that no glyphs will be
   //  split between two textures
   int atlasBlockHeight;
+
+  void* userPtr;
+  void (*userSDFRender)(void* uptr, void* fontimpl, unsigned char* output,
+      int outWidth, int outHeight, int outStride, float scale, int padding, int glyph);
+  void (*userDelete)(void* uptr);
 };
 typedef struct FONSparams FONSparams;
 
@@ -1004,8 +1005,12 @@ static FONSglyph* fons__getGlyph(FONScontext* stash, int fontid, unsigned int co
         fons__tt_renderGlyphBitmapSummed(&font->font, dst, cellw - pad, cellh - pad, stash->atlas->width, scale, g);
       } else if (stash->params.flags & FONS_SDF) {
         FONStexelU8* dst = (FONStexelU8*)stash->texData + (gx + gy*stash->atlas->width);
-        fons__tt_renderGlyphBitmapSDF(&font->font, dst, cellw, cellh,
-            stash->atlas->width, scale, pad, stash->params.sdfPixelDist, g);
+        if(stash->params.userSDFRender)
+          stash->params.userSDFRender(stash->params.userPtr,
+              &font->font, dst, cellw, cellh, stash->atlas->width, scale, pad, g);
+        else
+          fons__tt_renderGlyphBitmapSDF(&font->font, dst, cellw, cellh,
+              stash->atlas->width, scale, pad, stash->params.sdfPixelDist, g);
       } else {
         FONStexelU8* dst = (FONStexelU8*)stash->texData + (gx+pad + (gy+pad)*stash->atlas->width);
         fons__tt_renderGlyphBitmap(&font->font, dst, cellw - pad, cellh - pad, stash->atlas->width, scale, g);
@@ -1271,8 +1276,8 @@ void fonsDeleteInternal(FONScontext* stash)
   int i;
   if (stash == NULL) return;
 
-  //if (stash->params.renderDelete)
-  //  stash->params.renderDelete(stash->params.userPtr);
+  if (stash->params.userDelete)
+    stash->params.userDelete(stash->params.userPtr);
 
   for (i = 0; i < stash->nfonts; ++i)
     fons__freeFont(stash->fonts[i]);

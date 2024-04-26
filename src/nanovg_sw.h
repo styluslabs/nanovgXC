@@ -18,7 +18,8 @@ extern "C" {
 #endif
 
 enum NVGSWcreateFlags {
-  NVGSW_PATHS_XC = 1<<3  // use exact coverage algorithm for path rendering
+  NVGSW_PATHS_XC = 1<<3,  // use exact coverage algorithm for path rendering
+  NVGSW_SDFGEN = 1<<4,
 };
 
 
@@ -989,7 +990,7 @@ static void swnvg__addEdgeXC(SWNVGcontext* r, NVGvertex* vtx, float xmax)
 {
   SWNVGedge* e;
   // Skip horizontal edges
-  if (vtx->y0 == vtx->y1) return;
+  //if (vtx->y0 == vtx->y1) return;  -- horizontal edges needed for SDF generation
   if (r->nedges+1 > r->cedges) {
     r->cedges = r->cedges > 0 ? r->cedges * 2 : 64;
     r->edges = (SWNVGedge*)realloc(r->edges, sizeof(SWNVGedge) * r->cedges);
@@ -1005,7 +1006,7 @@ static void swnvg__addEdgeXC(SWNVGcontext* r, NVGvertex* vtx, float xmax)
 }
 
 // this fills in the +y direction, but we call with x and y swapped (see below) to fill in +x direction
-static float areaEdge2(float v0x, float v0y, float v1x, float v1y, float slope)
+static float areaEdge(float v0x, float v0y, float v1x, float v1y, float slope)
 {
   float win0 = swnvg__clampf(v0x, -0.5f, 0.5f);
   float win1 = swnvg__clampf(v1x, -0.5f, 0.5f);
@@ -1026,6 +1027,20 @@ static float areaEdge2(float v0x, float v0y, float v1x, float v1y, float slope)
   return area * width;
 }
 
+static float distToEdge2(float dx, float dy, float invl2, float px, float py)
+{
+  // Consider the line extending the segment, parameterized as start + t*(end - start).
+  // We find projection of pt onto this line and clamp t to [0,1] to limit to segment
+  //distToEdge2(SWNVGedge* edge, float x, float y)
+  //float dx = edge->x1 - edge->x0, dy = edge->y1 - edge->y0;
+  //float l2 = dx*dx + dy*dy;
+  //float px = x - edge->x0, py = y - edge->y0;
+  //if(l2 == 0.f) return px*px + py*py;
+  float t = swnvg__clampf((px*dx + py*dy)*invl2, 0.f, 1.f);
+  float qx = t*dx - px, qy = t*dy - py;
+  return qx*qx * qy*qy;
+}
+
 static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
 {
   int i, ix, iy;  //, ix0, iy0, iy1, ix1;
@@ -1037,7 +1052,7 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
   int yb1 = swnvg__mini(call->bounds[3], r->y1);
   SWNVGedge* edge = &gl->edges[call->edgeOffset];
   for(i = 0; i < call->edgeCount; ++i, ++edge) {
-    //if(edge->y0 == edge->y1) continue;  -- horizontal edges are never added to list
+    if(edge->y0 == edge->y1) continue;  // skip horizontal edges (still needed for SDF generation)
     int xedge = swnvg__mini(edge->dir, xb1);
     int dir = edge->y0 > edge->y1 ? -1 : 1;
     float ymin = swnvg__minf(edge->y0, edge->y1);
@@ -1062,7 +1077,8 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
       float* dst = &gl->covtex[iy*gl->width + ixmin];
       float cov = 0;
       for(ix = ixmin; ix <= ixmax; ++ix) {
-        float c = areaEdge2(edge->y0 - iy - 0.5f, edge->x0 - ix - 0.5f, edge->y1 - iy - 0.5f, edge->x1 - ix - 0.5f, invslope);
+        float c = areaEdge(
+            edge->y0 - iy - 0.5f, edge->x0 - ix - 0.5f, edge->y1 - iy - 0.5f, edge->x1 - ix - 0.5f, invslope);
         *dst++ += c - cov;
         cov = c;
       }
@@ -1078,6 +1094,60 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
       xmin += invslope;
       xmax += invslope;
     }
+  }
+
+  if (gl->flags & NVGSW_SDFGEN) {
+    int sdf_radius = gl->rshift;  // temporary (ha!) hack
+    edge = &gl->edges[call->edgeOffset];
+    for(i = 0; i < call->edgeCount; ++i, ++edge) {
+      float xmin = swnvg__minf(edge->x0, edge->x1);
+      float xmax = swnvg__maxf(edge->x0, edge->x1);
+      float ymin = swnvg__minf(edge->y0, edge->y1);
+      float ymax = swnvg__maxf(edge->y0, edge->y1);
+
+      int ixmin = swnvg__mini((int)xmin - sdf_radius, r->x0);
+      int ixmax = swnvg__maxi((int)xmax + 1 + sdf_radius, r->x1);
+      int iymin = swnvg__mini((int)ymin - sdf_radius, r->y0);
+      int iymax = swnvg__maxi((int)ymax + 1 + sdf_radius, r->y1);
+
+      float edgedx = edge->x1 - edge->x0, edgedy = edge->y1 - edge->y0;
+      float l2 = edgedx*edgedx + edgedy*edgedy;
+      if(l2 == 0.f) continue;  // should never happen
+      float invl2 = 1.f/l2;
+
+      for(iy = iymin; iy <= iymax; ++iy) {
+        float* fdst = (float*)(&gl->bitmap[iy*gl->stride]);
+        for(ix = ixmin; ix <= ixmax; ++ix) {
+          float px = 0.5f + ix - edge->x0, py = 0.5f + iy - edge->y0;
+          fdst[ix] = swnvg__minf(fdst[ix], distToEdge2(edgedx, edgedy, invl2, px, py));
+        }
+      }
+    }
+
+    // reset scanline limits - not used for SDF generation
+    int* lims = &r->lineLimits[2*(yb0 - r->y0)];
+    for(iy = yb0; iy <= yb1; ++iy, lims +=2) { lims[0] = gl->width; lims[1] = 0; }
+
+    int ixmin = swnvg__mini(call->bounds[0] - sdf_radius, r->x0);
+    int ixmax = swnvg__maxi(call->bounds[1] + sdf_radius, r->x1);
+    int iymin = swnvg__mini(call->bounds[2] - sdf_radius, r->y0);
+    int iymax = swnvg__maxi(call->bounds[3] + sdf_radius, r->y1);
+
+    for(iy = iymin; iy <= iymax; ++iy) {
+      float cover = 0;
+      int icover = 0;
+      float* fdst = (float*)(&gl->bitmap[iy*gl->stride + ixmin*4]);
+      float* dcover = &gl->covtex[iy*gl->width + ixmin];
+      for(ix = ixmin; ix <= ixmax; ++ix, ++dcover, ++fdst) {
+        if(*dcover != 0) {
+          cover += *dcover;
+          icover = swnvg__mini(fabsf(cover)*255 + 0.5f, 255);
+          *dcover = 0;
+        }
+        *fdst = sqrtf(*fdst) * (icover > 0 ? -1.f : 1.f);
+      }
+    }
+    return;
   }
 
   // fill

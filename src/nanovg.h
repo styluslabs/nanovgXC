@@ -712,6 +712,9 @@ void nvgDeleteInternal(NVGcontext* ctx);
 // set fontstash (e.g. to allow use of shared fontstash)
 typedef struct FONScontext FONScontext;
 void nvgSetFontStash(NVGcontext* ctx, FONScontext* fs);
+// draw glyph from STB truetype font as filled path - for use with SW backend to generate SDF texture
+typedef struct stbtt_fontinfo stbtt_fontinfo;
+void nvgDrawSTBTTGlyph(NVGcontext* ctx, stbtt_fontinfo* font, float scale, int pad, int glyph);
 
 NVGparams* nvgInternalParams(NVGcontext* ctx);
 

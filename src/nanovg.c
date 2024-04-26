@@ -2248,6 +2248,29 @@ static void nvg__renderText(NVGcontext* ctx, FONSstate* fons, NVGvertex* verts, 
   ctx->params.renderTriangles(ctx->params.userPtr, &paint, state->compositeOperation, &state->scissor, verts, nverts);
 }
 
+static void nvg__drawSTBTTGlyph(NVGcontext* ctx, stbtt_fontinfo* font, int glyph)
+{
+  stbtt_vertex* points;
+  int n_points = stbtt_GetGlyphShape(font, glyph, &points);
+  for (int i = 0; i < n_points; i++) {
+    if (points[i].type == STBTT_vmove) {
+      nvgMoveTo(ctx, points[i].x, points[i].y);
+      nvgPathWinding(ctx, NVG_AUTOW);
+      if(i == 0) {
+        float restart[] = { NVG_RESTART };  // flag indicating start of new path (and not just subpath)
+        nvg__appendCommands(ctx, restart, 1);
+      }
+    }
+    else if (points[i].type == STBTT_vline)
+      nvgLineTo(ctx, points[i].x, points[i].y);
+    else if (points[i].type == STBTT_vcurve)
+      nvgQuadTo(ctx, points[i].cx, points[i].cy, points[i].x, points[i].y);
+    else if (points[i].type == STBTT_vcubic)
+      nvgBezierTo(ctx, points[i].cx, points[i].cy, points[i].cx1, points[i].cy1, points[i].x, points[i].y);
+  }
+  stbtt_FreeShape(font, points);
+}
+
 // we expect that nvg__fonsSetup() has already been called
 static float nvg__textAsPaths(NVGcontext* ctx, FONSstate* fons, float x, float y, const char* string, const char* end)
 {
@@ -2255,7 +2278,7 @@ static float nvg__textAsPaths(NVGcontext* ctx, FONSstate* fons, float x, float y
   FONStextIter iter;
   FONSquad q;
   float xform[6];
-  float pxsize = fonsGetSize(fons);
+  float scale, pxsize = fonsGetSize(fons);
 
   memcpy(xform, state->xform, sizeof(float)*6);
   fonsTextIterInit(fons, &iter, x, y, string, end, FONS_GLYPH_BITMAP_OPTIONAL);
@@ -2264,36 +2287,29 @@ static float nvg__textAsPaths(NVGcontext* ctx, FONSstate* fons, float x, float y
   //  of blended anyway
   nvgBeginPath(ctx);
   while (fonsTextIterNext(fons, &iter, &q)) {
-    float scale;
-    int n_points;
-    stbtt_vertex* points;
     stbtt_fontinfo* font = (stbtt_fontinfo*)fonsGetFontImpl(ctx->fs, iter.prevGlyphFont);
     if (!font)
       continue;  // missing glyph
     scale = stbtt_ScaleForPixelHeight(font, pxsize);  // this is fast
-    n_points = stbtt_GetGlyphShape(font, iter.prevGlyphIndex, &points);
     nvgTransform(ctx, scale, 0, 0, -scale, iter.x, iter.y);
-    for (int i = 0; i < n_points; i++) {
-      if (points[i].type == STBTT_vmove) {
-        nvgMoveTo(ctx, points[i].x, points[i].y);
-        nvgPathWinding(ctx, NVG_AUTOW);
-        if(i == 0) {
-          float restart[] = { NVG_RESTART };  // flag indicating start of new path (and not just subpath)
-          nvg__appendCommands(ctx, restart, 1);
-        }
-      }
-      else if (points[i].type == STBTT_vline)
-        nvgLineTo(ctx, points[i].x, points[i].y);
-      else if (points[i].type == STBTT_vcurve)
-        nvgQuadTo(ctx, points[i].cx, points[i].cy, points[i].x, points[i].y);
-      else if (points[i].type == STBTT_vcubic)
-        nvgBezierTo(ctx, points[i].cx, points[i].cy, points[i].cx1, points[i].cy1, points[i].x, points[i].y);
-    }
-    stbtt_FreeShape(font, points);
-    memcpy(state->xform, xform, sizeof(float)*6);
+    nvg__drawSTBTTGlyph(ctx, font, iter.prevGlyphIndex);
+    memcpy(state->xform, xform, sizeof(float)*6);  // restore transform
   }
   //nvgFill(ctx); -- need to support stoked text too!
   return iter.nextx;
+}
+
+void nvgDrawSTBTTGlyph(NVGcontext* ctx, stbtt_fontinfo* font, float scale, int pad, int glyph)
+{
+  NVGstate* state = nvg__getState(ctx);
+  float xform[6];
+  memcpy(xform, state->xform, sizeof(float)*6);
+  //float scale = stbtt_ScaleForPixelHeight(font, pxsize);
+  nvgTransform(ctx, scale, 0, 0, -scale, pad, pad);
+  nvgBeginPath(ctx);
+  nvg__drawSTBTTGlyph(ctx, font, glyph);
+  nvgFill(ctx);
+  memcpy(state->xform, xform, sizeof(float)*6);  // restore transform
 }
 
 static float nvg__textFromAtlas(NVGcontext* ctx, FONSstate* fons, float x, float y, const char* string, const char* end)
