@@ -1005,6 +1005,15 @@ static void swnvg__addEdgeXC(SWNVGcontext* r, NVGvertex* vtx, float xmax)
   e->dir = ceilf(xmax);
 }
 
+// unfortunately, the signs in coversCenter() and areaEdge() are all messed up vs. GLSL version
+static float coversCenter(float v0x, float v0y, float v1x, float v1y)
+{
+  // no AA - just determine if center of pixel (0,0) is inside trapezoid
+  if(v1x <= 0.0f || v0x > 0.0f || v0x == v1x)
+    return 0.0f;
+  return v0y*(v1x - v0x) - v0x*(v1y - v0y) < 0.0f ? 1.0f : 0.0f;  // < 0 to fill in +y direction, > 0 for -y
+}
+
 // this fills in the +y direction, but we call with x and y swapped (see below) to fill in +x direction
 static float areaEdge(float v0x, float v0y, float v1x, float v1y, float slope)
 {
@@ -1038,7 +1047,7 @@ static float distToEdge2(float dx, float dy, float invl2, float px, float py)
   //if(l2 == 0.f) return px*px + py*py;
   float t = swnvg__clampf((px*dx + py*dy)*invl2, 0.f, 1.f);
   float qx = t*dx - px, qy = t*dy - py;
-  return qx*qx * qy*qy;
+  return qx*qx + qy*qy;
 }
 
 static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
@@ -1076,15 +1085,29 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
       int ixmax = swnvg__mini((int)xmax, ixright);
       float* dst = &gl->covtex[iy*gl->width + ixmin];
       float cov = 0;
-      for(ix = ixmin; ix <= ixmax; ++ix) {
-        float c = areaEdge(
-            edge->y0 - iy - 0.5f, edge->x0 - ix - 0.5f, edge->y1 - iy - 0.5f, edge->x1 - ix - 0.5f, invslope);
-        *dst++ += c - cov;
-        cov = c;
+      float v0y = edge->y0 - iy - 0.5f, v1y = edge->y1 - iy - 0.5f;
+      if(call->flags & NVG_PATH_NO_AA) {  // || gl->flags & NVGSW_SDFGEN) {
+        for(ix = ixmin; ix <= ixmax; ++ix) {
+          float v0x = edge->x0 - ix - 0.5f, v1x = edge->x1 - ix - 0.5f;
+          float c = v1y < v0y ? -coversCenter(v1y, v1x, v0y, v0x) : coversCenter(v0y, v0x, v1y, v1x);
+          *dst++ += c - cov;
+          cov = c;
+        }
+        // coverage for remaining pixels
+        if(ix <= xedge)
+          *dst += dir*(ymax > iy+0.5f && ymin <= iy+0.5f ? 1.0f : 0.0f) - cov;
       }
-      // coverage for remaining pixels
-      if(ix <= xedge)
-        *dst += dir*(swnvg__minf(ymax, iy+1) - swnvg__maxf(ymin, iy)) - cov;
+      else {
+        for(ix = ixmin; ix <= ixmax; ++ix) {
+          float v0x = edge->x0 - ix - 0.5f, v1x = edge->x1 - ix - 0.5f;
+          float c = areaEdge(v0y, v0x, v1y, v1x, invslope);
+          *dst++ += c - cov;
+          cov = c;
+        }
+        // coverage for remaining pixels
+        if(ix <= xedge)
+          *dst += dir*(swnvg__minf(ymax, iy+1) - swnvg__maxf(ymin, iy)) - cov;
+      }
       // scanline x limits
       if(ixmin < lims[0])
         lims[0] = ixmin;
@@ -1097,6 +1120,8 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
   }
 
   if (gl->flags & NVGSW_SDFGEN) {
+    // this is about 10x faster than stbtt_GetGlyphSDF (in valgrind) and supports OTF; if we needed even better
+    //  performance, we could add edges to r-tree or other spatial index to quickly find edge nearest pixel
     int sdf_radius = gl->rshift;  // temporary (ha!) hack
     edge = &gl->edges[call->edgeOffset];
     for(i = 0; i < call->edgeCount; ++i, ++edge) {
@@ -1105,16 +1130,16 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
       float ymin = swnvg__minf(edge->y0, edge->y1);
       float ymax = swnvg__maxf(edge->y0, edge->y1);
 
-      int ixmin = swnvg__mini((int)xmin - sdf_radius, r->x0);
-      int ixmax = swnvg__maxi((int)xmax + 1 + sdf_radius, r->x1);
-      int iymin = swnvg__mini((int)ymin - sdf_radius, r->y0);
-      int iymax = swnvg__maxi((int)ymax + 1 + sdf_radius, r->y1);
+      int ixmin = swnvg__maxi((int)xmin - sdf_radius, r->x0);
+      int ixmax = swnvg__mini((int)xmax + 1 + sdf_radius, r->x1);
+      int iymin = swnvg__maxi((int)ymin - sdf_radius, r->y0);
+      int iymax = swnvg__mini((int)ymax + 1 + sdf_radius, r->y1);
 
       float edgedx = edge->x1 - edge->x0, edgedy = edge->y1 - edge->y0;
       float l2 = edgedx*edgedx + edgedy*edgedy;
       if(l2 == 0.f) continue;  // should never happen
       float invl2 = 1.f/l2;
-
+      // iterate over every pixel within sdf_radius of edge (within box, actually)
       for(iy = iymin; iy <= iymax; ++iy) {
         float* fdst = (float*)(&gl->bitmap[iy*gl->stride]);
         for(ix = ixmin; ix <= ixmax; ++ix) {
@@ -1128,79 +1153,77 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
     int* lims = &r->lineLimits[2*(yb0 - r->y0)];
     for(iy = yb0; iy <= yb1; ++iy, lims +=2) { lims[0] = gl->width; lims[1] = 0; }
 
-    int ixmin = swnvg__mini(call->bounds[0] - sdf_radius, r->x0);
-    int ixmax = swnvg__maxi(call->bounds[1] + sdf_radius, r->x1);
-    int iymin = swnvg__mini(call->bounds[2] - sdf_radius, r->y0);
-    int iymax = swnvg__maxi(call->bounds[3] + sdf_radius, r->y1);
-
+    int ixmin = swnvg__maxi(call->bounds[0] - sdf_radius, r->x0);
+    int iymin = swnvg__maxi(call->bounds[1] - sdf_radius, r->y0);
+    int ixmax = swnvg__mini(call->bounds[2] + sdf_radius, r->x1);
+    int iymax = swnvg__mini(call->bounds[3] + sdf_radius, r->y1);
+    // resolve coverage (to get sign for distance) and write final signed distance for each pixel
     for(iy = iymin; iy <= iymax; ++iy) {
       float cover = 0;
-      int icover = 0;
       float* fdst = (float*)(&gl->bitmap[iy*gl->stride + ixmin*4]);
       float* dcover = &gl->covtex[iy*gl->width + ixmin];
       for(ix = ixmin; ix <= ixmax; ++ix, ++dcover, ++fdst) {
         if(*dcover != 0) {
           cover += *dcover;
-          icover = swnvg__mini(fabsf(cover)*255 + 0.5f, 255);
           *dcover = 0;
         }
-        *fdst = sqrtf(*fdst) * (icover > 0 ? -1.f : 1.f);
+        *fdst = sqrtf(*fdst) * (fabsf(cover) >= 0.5f ? -1.f : 1.f);
       }
     }
-    return;
   }
+  else {
+    // fill
+    int* lims = &r->lineLimits[2*(yb0 - r->y0)];
+    int linear = call->flags & NVG_SRGB ? 1 : 0;
+    int complex = call->type != SWNVG_PAINT_COLOR || call->flags & NVG_PATH_SCISSOR || call->flags & NVG_PATH_BLENDFUNC;
+    rgba32_t c = call->innerCol;
+    for(iy = yb0; iy <= yb1; ++iy) {
+      float cover = 0;
+      int icover = 0;
+      int count = swnvg__mini(lims[1], xb1) - lims[0] + 1;
+      unsigned char* dst = &gl->bitmap[iy*gl->stride + lims[0]*4];
+      float* dcover = &gl->covtex[iy*gl->width + lims[0]];
+      lims[0] = gl->width; lims[1] = 0;  // reset limits for this scanline
+      lims += 2;
 
-  // fill
-  int* lims = &r->lineLimits[2*(yb0 - r->y0)];
-  int linear = call->flags & NVG_SRGB ? 1 : 0;
-  int complex = call->type != SWNVG_PAINT_COLOR || call->flags & NVG_PATH_SCISSOR || call->flags & NVG_PATH_BLENDFUNC;
-  rgba32_t c = call->innerCol;
-  for(iy = yb0; iy <= yb1; ++iy) {
-    float cover = 0;
-    int icover = 0;
-    int count = swnvg__mini(lims[1], xb1) - lims[0] + 1;
-    unsigned char* dst = &gl->bitmap[iy*gl->stride + lims[0]*4];
-    float* dcover = &gl->covtex[iy*gl->width + lims[0]];
-    lims[0] = gl->width; lims[1] = 0;  // reset limits for this scanline
-    lims += 2;
-
-    if (!complex) {
-      // handle solid color directly for better performance
-      if(RGBA32_IS_OPAQUE(c)) {
-        for(i = 0; i < count; ++i, ++dcover, dst += 4) {
-          if(*dcover != 0) {
-            cover += *dcover;
-            icover = swnvg__mini(fabsf(cover)*255 + 0.5f, 255);
-            *dcover = 0;
+      if (!complex) {
+        // handle solid color directly for better performance
+        if(RGBA32_IS_OPAQUE(c)) {
+          for(i = 0; i < count; ++i, ++dcover, dst += 4) {
+            if(*dcover != 0) {
+              cover += *dcover;
+              icover = swnvg__mini(fabsf(cover)*255 + 0.5f, 255);
+              *dcover = 0;
+            }
+            if(icover > 0)
+              swnvg__blendOpaque(dst, icover, c, linear);
           }
-          if(icover > 0)
-            swnvg__blendOpaque(dst, icover, c, linear);
+        }
+        else {
+          for(i = 0; i < count; ++i, ++dcover, dst += 4) {
+            if(*dcover != 0) {
+              cover += *dcover;
+              icover = swnvg__mini(fabsf(cover)*255 + 0.5f, 255);
+              *dcover = 0;
+            }
+            if(icover > 0)
+              swnvg__blend(dst, icover, COLOR0(c), COLOR1(c), COLOR2(c), COLOR3(c), linear);
+          }
         }
       }
       else {
-        for(i = 0; i < count; ++i, ++dcover, dst += 4) {
+        // images and gradients
+        unsigned char* sl = r->scanline;
+        for(i = 0; i < count; ++i, ++dcover, ++sl) {
           if(*dcover != 0) {
             cover += *dcover;
             icover = swnvg__mini(fabsf(cover)*255 + 0.5f, 255);
             *dcover = 0;
           }
-          if(icover > 0)
-            swnvg__blend(dst, icover, COLOR0(c), COLOR1(c), COLOR2(c), COLOR3(c), linear);
+          *sl = icover;
         }
+        swnvg__scanlineSolid(dst, count, r->scanline, xb0, iy, call);
       }
-    }
-    else {
-      // images and gradients
-      unsigned char* sl = r->scanline;
-      for(i = 0; i < count; ++i, ++dcover, ++sl) {
-        if(*dcover != 0) {
-          cover += *dcover;
-          icover = swnvg__mini(fabsf(cover)*255 + 0.5f, 255);
-          *dcover = 0;
-        }
-        *sl = icover;
-      }
-      swnvg__scanlineSolid(dst, count, r->scanline, xb0, iy, call);
     }
   }
 }

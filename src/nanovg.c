@@ -2302,10 +2302,13 @@ static float nvg__textAsPaths(NVGcontext* ctx, FONSstate* fons, float x, float y
 void nvgDrawSTBTTGlyph(NVGcontext* ctx, stbtt_fontinfo* font, float scale, int pad, int glyph)
 {
   NVGstate* state = nvg__getState(ctx);
+  int ix0, iy0, ix1, iy1;
   float xform[6];
   memcpy(xform, state->xform, sizeof(float)*6);
   //float scale = stbtt_ScaleForPixelHeight(font, pxsize);
-  nvgTransform(ctx, scale, 0, 0, -scale, pad, pad);
+  stbtt_GetGlyphBitmapBoxSubpixel(font, glyph, scale, scale, 0.0f,0.0f, &ix0,&iy0,&ix1,&iy1);
+  //nvgTransform(ctx, scale, 0, 0, -scale, pad+ix0, pad-iy0);
+  nvgTransform(ctx, scale, 0, 0, -scale, pad-ix0, pad-iy0);
   nvgBeginPath(ctx);
   nvg__drawSTBTTGlyph(ctx, font, glyph);
   nvgFill(ctx);
