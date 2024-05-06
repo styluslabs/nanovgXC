@@ -55,6 +55,63 @@
 #include "threadpool.h"
 #endif
 
+typedef struct { NVGcontext* vg; float* fbuff; int fbuffw, fbuffh; float sdfScale, sdfOffset; } SDFcontext;
+
+static const float INITIAL_SDF_DIST = 1E6f;
+
+static void sdfRender(void* uptr, void* fontimpl, unsigned char* output,
+      int outWidth, int outHeight, int outStride, float scale, int padding, int glyph)
+{
+  SDFcontext* ctx = (SDFcontext*)uptr;
+
+  nvgBeginFrame(ctx->vg, 0, 0, 1);
+  nvgDrawSTBTTGlyph(ctx->vg, (stbtt_fontinfo*)fontimpl, scale, padding, glyph);
+  nvgEndFrame(ctx->vg);
+
+  for(int iy = 0; iy < outHeight; ++iy) {
+    for(int ix = 0; ix < outWidth; ++ix) {
+      float sd = ctx->fbuff[ix + iy*ctx->fbuffw] * ctx->sdfScale + ctx->sdfOffset;
+      output[ix + iy*outStride] = (unsigned char)(0.5f + glnvg__minf(glnvg__maxf(sd, 0.f), 255.f));
+      ctx->fbuff[ix + iy*ctx->fbuffw] = INITIAL_SDF_DIST;   // will get clamped to 255
+    }
+  }
+}
+
+static void sdfDelete(void* uptr)
+{
+  SDFcontext* ctx = (SDFcontext*)uptr;
+  nvgswDelete(ctx->vg);
+  free(ctx->fbuff);
+  free(ctx);
+}
+
+FONScontext* createFontstash(int nvgFlags, int maxAtlasFontPx)
+{
+  FONSparams params;
+  memset(&params, 0, sizeof(FONSparams));
+  params.flags = FONS_ZERO_TOPLEFT | FONS_DELAY_LOAD;
+  params.flags |= (nvgFlags & NVG_SDF_TEXT) ? FONS_SDF : FONS_SUMMED;
+  params.sdfPadding = 4;
+  params.sdfPixelDist = 32.0f;
+
+  SDFcontext* ctx = malloc(sizeof(SDFcontext));
+  ctx->fbuffh = ctx->fbuffw = maxAtlasFontPx + 2*params.sdfPadding + 16;
+  // we use dist < 0.0f inside glyph; but for scale > 0, stbtt uses >on_edge_value for inside
+  ctx->sdfScale = -params.sdfPixelDist;
+  ctx->sdfOffset = 127;  // stbtt on_edge_value
+
+  ctx->fbuff = malloc(ctx->fbuffw*ctx->fbuffh*sizeof(float));
+  for(size_t ii = 0; ii < ctx->fbuffw*ctx->fbuffh; ++ii)
+    ctx->fbuff[ii] = INITIAL_SDF_DIST;
+  ctx->vg = nvgswCreate(NVG_AUTOW_DEFAULT | NVG_NO_FONTSTASH | NVGSW_PATHS_XC | NVGSW_SDFGEN);
+  nvgswSetFramebuffer(ctx->vg, ctx->fbuff, ctx->fbuffw, ctx->fbuffh, params.sdfPadding, 0,0,0);
+
+  params.userPtr = ctx;
+  params.userSDFRender = sdfRender;
+  params.userDelete = sdfDelete;
+  return fonsCreateInternal(&params);
+}
+
 int SDL_main(int argc, char* argv[])
 {
   DemoData demoData;
@@ -123,7 +180,7 @@ int SDL_main(int argc, char* argv[])
   SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
   //SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
 
-  int nvgFlags = 0;  //NVG_NO_FB_FETCH  NVG_AUTOW_DEFAULT  NVGSW_PATHS_XC
+  int nvgFlags = NVG_NO_FONTSTASH;  //NVG_NO_FB_FETCH  NVG_AUTOW_DEFAULT  NVGSW_PATHS_XC
 #ifndef NDEBUG
   nvgFlags |= NVGL_DEBUG;
 #endif
@@ -226,6 +283,7 @@ int SDL_main(int argc, char* argv[])
     }
 #endif
   }
+  nvgSetFontStash(vg, createFontstash(nvgFlags, 2*48));
 
   // Android: copy assets out of APK
 #if 0 //defined __ANDROID__

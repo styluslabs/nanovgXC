@@ -19,7 +19,7 @@ extern "C" {
 
 enum NVGSWcreateFlags {
   NVGSW_PATHS_XC = 1<<3,  // use exact coverage algorithm for path rendering
-  NVGSW_SDFGEN = 1<<4,
+  NVGSW_SDFGEN = 1<<4,  // to generate distance field textures for use by another renderer
 };
 
 

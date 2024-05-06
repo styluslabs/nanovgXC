@@ -25,6 +25,8 @@ By default, text is rendered using a "summed" font atlas where each pixel stores
 
 The original intent of this approach was to support continuous scaling of text and arbitrary subpixel positioning of glyphs with a single atlas, but it could well be slower than just rebuilding the font atlas (and it is for the current software renderer implementation).  Signed distance field text rendering (w/ 4 samples per pixel) is also supported and provides similar quality along with support for adjusting text weight.  Pass the `NVG_SDF_TEXT` flag to `nvglCreate` or `nvgswCreate` to use SDF text rendering.
 
+The nanovg_sw backend can now be used to generate SDF textures when created with the `NVGSW_SDFGEN` flag.  In this mode, the output framebuffer is treated as an array of floats.  See `createFontstash()` in [example_sdl.c](/example/example_sdl.c) for an example.  Compared with stb_truetype, SDF generation is about 10x faster and OpenType (cubic Bezier) outlines are supported.
+
 
 ### "Exact Coverage" ###
 
