@@ -61,6 +61,7 @@ struct NVGstate {
   float alpha;
   float xform[6];
   NVGscissor scissor;
+  float scissorBounds[4];
   float fontSize;
   float letterSpacing;
   float lineHeight;
@@ -942,17 +943,26 @@ int nvgMultiGradient(NVGcontext* ctx, int imageFlags, float* stops, NVGcolor* co
 void nvgScissor(NVGcontext* ctx, float x, float y, float w, float h)
 {
   NVGstate* state = nvg__getState(ctx);
+  float* sxform = state->scissor.xform;
+  float ex = nvg__maxf(0.0f, w)*0.5f;
+  float ey = nvg__maxf(0.0f, h)*0.5f;
+  float tex, tey;
 
-  w = nvg__maxf(0.0f, w);
-  h = nvg__maxf(0.0f, h);
+  nvgTransformIdentity(sxform);
+  sxform[4] = x+ex;  //w*0.5f;
+  sxform[5] = y+ey;  //h*0.5f;
+  nvgTransformMultiply(sxform, state->xform);
 
-  nvgTransformIdentity(state->scissor.xform);
-  state->scissor.xform[4] = x+w*0.5f;
-  state->scissor.xform[5] = y+h*0.5f;
-  nvgTransformMultiply(state->scissor.xform, state->xform);
+  state->scissor.extent[0] = ex;  //w*0.5f;
+  state->scissor.extent[1] = ey;  //h*0.5f;
 
-  state->scissor.extent[0] = w*0.5f;
-  state->scissor.extent[1] = h*0.5f;
+  // path bounds will be clipped to AABB of scissor
+  tex = ex*nvg__absf(sxform[0]) + ey*nvg__absf(sxform[2]);
+  tey = ex*nvg__absf(sxform[1]) + ey*nvg__absf(sxform[3]);
+  state->scissorBounds[0] = sxform[4]-tex;
+  state->scissorBounds[1] = sxform[5]-tey;
+  state->scissorBounds[2] = sxform[4]+tex;
+  state->scissorBounds[3] = sxform[5]+tey;
 }
 
 static void nvg__isectRects(float* dst,
@@ -1387,6 +1397,7 @@ static void nvg__flattenPaths(NVGcontext* ctx)
 
 static void nvg__calcBounds(NVGcontext* ctx)
 {
+  NVGstate* state = nvg__getState(ctx);
   NVGpathCache* cache = ctx->cache;
   int i,j;
   cache->bounds[0] = cache->bounds[1] = 1e6f;
@@ -1408,6 +1419,13 @@ static void nvg__calcBounds(NVGcontext* ctx)
     cache->bounds[1] = nvg__minf(cache->bounds[1], path->bounds[1]);
     cache->bounds[2] = nvg__maxf(cache->bounds[2], path->bounds[2]);
     cache->bounds[3] = nvg__maxf(cache->bounds[3], path->bounds[3]);
+  }
+  // clip bounds to scissor
+  if (state->scissor.extent[0] >= 0) {
+    cache->bounds[0] = nvg__maxf(cache->bounds[0], state->scissorBounds[0]);
+    cache->bounds[1] = nvg__maxf(cache->bounds[1], state->scissorBounds[1]);
+    cache->bounds[2] = nvg__minf(cache->bounds[2], state->scissorBounds[2]);
+    cache->bounds[3] = nvg__minf(cache->bounds[3], state->scissorBounds[3]);
   }
 }
 

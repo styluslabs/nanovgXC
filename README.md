@@ -7,6 +7,7 @@ nanovgXC is a small library for rendering vector graphics, based on [nanovg](htt
   * including very thin (a few pixels or less) filled paths, with which nanovg's antialiasing technique has some difficulties
 * support for both even-odd and non-zero fill rules
 * support for rendering text as paths
+* signed distance field text rendering
 * gradients with more than 2 stops
 * dashed strokes
 
@@ -21,11 +22,15 @@ Three rendering backends are available:
     * no extensions - switches between two framebuffers for each path (one for accumulating winding, one for final output).  Not as slow as it sounds on desktop GPUs - faster than software renderer for large paths.
 3. [nanovg_sw](/src/nanovg_sw.h): software renderer backend based on [nanosvg](https://github.com/memononen/nanosvg) and [stb_truetype](https://github.com/nothings/stb), supporting both "exact coverage" and sub-scanline rendering (see below).  Supports multi-threaded rendering, with each thread rendering a separate region of the output.  This significantly improves performance on desktop platforms, less so on mobile.
 
-By default, text is rendered using a "summed" font atlas where each pixel stores the total coverage in the rectangle defined by that pixel and the origin (0,0).  When rendering, the texture coordinates for the corners of the current pixel are calculated and the corresponding values (s00, s01, s10, s11) from the summed font atlas are read with bilinear interpolation.  The pixel's coverage is then just s11 - s01 - s10 + s00.  Text at font sizes above a threshold set by `nvgAtlasTextThreshold()` is rendered directly as paths.  Text at all sizes below the threshold is rendered from the single atlas.
+### Text Rendering ###
 
-The original intent of this approach was to support continuous scaling of text and arbitrary subpixel positioning of glyphs with a single atlas, but it could well be slower than just rebuilding the font atlas (and it is for the current software renderer implementation).  Signed distance field text rendering (w/ 4 samples per pixel) is also supported and provides similar quality along with support for adjusting text weight.  Pass the `NVG_SDF_TEXT` flag to `nvglCreate` or `nvgswCreate` to use SDF text rendering.
+Text can be rendered using the signed distance field (SDF) method (with 4 samples per pixel) or a "summed coverage" method.  Pass the `NVG_SDF_TEXT` flag to `nvglCreate()` or `nvgswCreate()` to use SDF text rendering.  Both approaches support continuous scaling of text and arbitrary subpixel positioning of glyphs with a single atlas with similar quality and performance (which is not great for the software renderer).  With SDF rendering, `nvgFontBlur()` can be used to adjust the weight of text.  Text at font sizes above a threshold set by `nvgAtlasTextThreshold()` is rendered directly as paths.  The font size used for the atlas is twice this threshold.  Text at all sizes below the threshold is rendered from the single atlas.
 
-The nanovg_sw backend can now be used to generate SDF textures when created with the `NVGSW_SDFGEN` flag.  In this mode, the output framebuffer is treated as an array of floats.  See `createFontstash()` in [example_sdl.c](/example/example_sdl.c) for an example.  Compared with stb_truetype, SDF generation is about 10x faster and OpenType (cubic Bezier) outlines are supported.
+The atlas is managed by `fontstash.h` (modified from the original nanovg fontstash).  To avoid unnecessary duplication, a single fontstash context can be shared between multiple nanovg contexts by passing the `NVG_NO_FONTSTASH` flag to `nvglCreate()` or `nvgswCreate()`, then calling `nvgSetFontStash()`.
+
+In the "summed coverage" font atlas, each pixel stores the total coverage in the rectangle defined by that pixel and the origin (0,0).  When rendering, the texture coordinates for the corners of the current pixel are calculated and the corresponding values (s00, s01, s10, s11) from the summed font atlas are read with bilinear interpolation.  The pixel's coverage is then just s11 - s01 - s10 + s00.
+
+The nanovg_sw backend can be used to generate SDF textures when created with the `NVGSW_SDFGEN` flag.  In this mode, the output framebuffer is treated as an array of floats.  See `createFontstash()` in [example_sdl.c](/example/example_sdl.c) for an example.  Compared with stb_truetype, SDF generation is about 10x faster and OpenType (cubic Bezier) outlines are supported.
 
 
 ### "Exact Coverage" ###

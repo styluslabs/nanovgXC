@@ -1453,24 +1453,9 @@ static int swnvg__convertPaint(SWNVGcontext* gl, SWNVGcall* call, NVGpaint* pain
   call->outerCol = swnvg__convertColor(gl, paint->outerColor);
   memcpy(call->extent, paint->extent, sizeof(call->extent));
 
-  call->bounds[0] = 0; call->bounds[1] = 0; call->bounds[2] = gl->width-1; call->bounds[3] = gl->height-1;
   if (scissor->extent[0] > -0.5f && scissor->extent[1] > -0.5f) {
-    // clip bounds to scissor rect
-    if(scissor->xform[1] == 0 && scissor->xform[2] == 0) {
-      float l0 = -scissor->extent[0], r0 = scissor->extent[0], l1, r1;
-      float t0 = -scissor->extent[1], b0 = scissor->extent[1], t1, b1;
-      nvgTransformPoint(&l1, &t1, scissor->xform, l0, t0);
-      nvgTransformPoint(&r1, &b1, scissor->xform, r0, b0);
-      // account for negative scale!
-      l0 = swnvg__minf(l1, r1);  r0 = swnvg__maxf(l1, r1);
-      t0 = swnvg__minf(t1, b1);  b0 = swnvg__maxf(t1, b1);
-      // should we round or do floor and ceil?
-      call->bounds[0] = swnvg__maxi(call->bounds[0], (int)(l0 + 0.5f));
-      call->bounds[1] = swnvg__maxi(call->bounds[1], (int)(t0 + 0.5f));
-      call->bounds[2] = swnvg__mini(call->bounds[2], (int)(r0 + 0.5f));
-      call->bounds[3] = swnvg__mini(call->bounds[3], (int)(b0 + 0.5f));
-    }
-    else {
+    // bounds are already clipped to scissor rect, so don't need to do anything for axis-aligned scissor
+    if (scissor->xform[1] != 0 || scissor->xform[2] != 0) {
       call->flags |= NVG_PATH_SCISSOR;
       nvgTransformInverse(call->scissorMat, scissor->xform);
       call->scissorExt[0] = scissor->extent[0];
@@ -1503,7 +1488,6 @@ static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
 {
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
   int i, j, maxverts = 0;
-  int ibounds[4] = { (int)bounds[0], (int)bounds[1], (int)(ceilf(bounds[2])), (int)(ceilf(bounds[3])) };
   SWNVGcall* call = NULL;
   for (i = 0; i < npaths; ++i)
     maxverts += paths[i].nfill;
@@ -1511,13 +1495,23 @@ static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
   call = swnvg__allocCall(gl);
   if (call == NULL) return;
 
+  call->bounds[0] = swnvg__clampi((int)bounds[0], 0, gl->width-1);
+  call->bounds[1] = swnvg__clampi((int)bounds[1], 0, gl->height-1);
+  call->bounds[2] = swnvg__clampi((int)(ceilf(bounds[2])), 0, gl->width-1);
+  call->bounds[3] = swnvg__clampi((int)(ceilf(bounds[3])), 0, gl->height-1);
+  // note that bounds are inclusive (hence > instead of >=)
+  if (call->bounds[0] > call->bounds[2] || call->bounds[1] > call->bounds[3]) {
+    --gl->ncalls;
+    return;
+  }
+
   swnvg__convertPaint(gl, call, paint, scissor, flags);
   call->blendFunc = compOp;
-  if(compOp.srcRGB != NVG_ONE || compOp.srcAlpha != NVG_ONE ||
+  if (compOp.srcRGB != NVG_ONE || compOp.srcAlpha != NVG_ONE ||
        compOp.dstRGB != NVG_ONE_MINUS_SRC_ALPHA || compOp.dstAlpha != NVG_ONE_MINUS_SRC_ALPHA) {
     call->flags |= NVG_PATH_BLENDFUNC;
   }
-  if((gl->flags & NVGSW_PATHS_XC) && !(call->flags & NVG_PATH_NO_AA) && !(call->flags & NVG_PATH_EVENODD)) {
+  if ((gl->flags & NVGSW_PATHS_XC) && !(call->flags & NVG_PATH_NO_AA) && !(call->flags & NVG_PATH_EVENODD)) {
     call->flags |= NVG_PATH_XC;
     if(!gl->covtex) {
       size_t n = gl->width * gl->height * sizeof(float);
@@ -1525,22 +1519,12 @@ static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
       memset(gl->covtex, 0, n);
     }
   }
-  // since bounds are inclusive, a bit tricky to distinguish totally clipped path later
-  if (ibounds[0] > call->bounds[2] || ibounds[1] > call->bounds[3]
-      || ibounds[2] < call->bounds[0] || ibounds[3] < call->bounds[1]) {
-    --gl->ncalls;
-    return;
-  }
-  call->bounds[0] = swnvg__maxi(ibounds[0], call->bounds[0]);
-  call->bounds[1] = swnvg__maxi(ibounds[1], call->bounds[1]);
-  call->bounds[2] = swnvg__mini(ibounds[2], call->bounds[2]);
-  call->bounds[3] = swnvg__mini(ibounds[3], call->bounds[3]);
 
   call->triangleCount = 0;
   call->edgeOffset = gl->nedges;
   for (i = 0; i < npaths; ++i) {
     const NVGpath* path = &paths[i];
-    for(j = 0; j < path->nfill; ++j)
+    for (j = 0; j < path->nfill; ++j)
       if(call->flags & NVG_PATH_XC)
         swnvg__addEdgeXC(gl, &path->fill[j], path->bounds[2]);
       else

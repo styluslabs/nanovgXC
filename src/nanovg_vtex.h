@@ -1297,7 +1297,7 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
   float callw = ltrb[2] - ltrb[0], callh = ltrb[3] - ltrb[1];
   if (callw <= 0 || callh <= 0) return;  // offscreen path
   // must set convex flag before glnvg__convertPaint (due to reuse of identical uniform blocks)
-  if(npaths == 1 && paths[0].convex && paths[0].nfill > 2)
+  if (npaths == 1 && paths[0].convex && paths[0].nfill > 2)
     flags |= NVG_PATH_CONVEX;
 
   int call0 = glnvg__allocCalls(gl, 1);
@@ -1320,8 +1320,7 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
     call->triangleOffset = triidx;
     // vertices for triangle fan
     memcpy(&gl->verts[triidx], path->fill, path->nfill*sizeof(NVGvertex));
-  }
-  else if(ncalls == 1 && nedges > 16 && (callw > 2*gl->tilesize || callh > 2*gl->tilesize)) {
+  } else if (ncalls == 1 && nedges > 16 && (callw > 2*gl->tilesize || callh > 2*gl->tilesize)) {
     // break large paths into tiles - note that some tiles may be empty
     // expand bounds to include all touched pixels
     ltrb[0] = floorf(ltrb[0]); ltrb[1] = floorf(ltrb[1]); ltrb[2] = ceilf(ltrb[2]); ltrb[3] = ceilf(ltrb[3]);
@@ -1329,7 +1328,7 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
     int xtiles = ceilf(callw/gl->tilesize), ytiles = ceilf(callh/gl->tilesize);
     int ntiles = xtiles*ytiles;
     int tilew = ceilf(callw/xtiles), tileh = ceilf(callh/ytiles);
-    if(ntiles > gl->ntiles) {
+    if (ntiles > gl->ntiles) {
       gl->tiles = (GLNVGtile*)realloc(gl->tiles, ntiles*sizeof(GLNVGtile));
       memset(gl->tiles + gl->ntiles, 0, (ntiles - gl->ntiles)*sizeof(GLNVGtile));
       gl->ntiles = ntiles;
@@ -1341,27 +1340,27 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
       const NVGpath* path = &paths[i];
       if (path->nfill == 0) continue;
       int pymin = glnvg__clampi(((int)(path->bounds[1] - ltrb[1] - 0.5f))/tileh, 0, ytiles-1);
-      for(int j = 0; j < path->nfill; ++j) {
+      for (int j = 0; j < path->nfill; ++j) {
         float x0 = path->fill[j].x0, y0 = path->fill[j].y0, x1 = path->fill[j].x1, y1 = path->fill[j].y1;
         //if((x0 < -0.5f && x1 < -0.5f) || (x0 > gl->view[0]+0.5f && x1 > gl->view[0]+0.5f)) continue;
-        if(x0 == x1) continue;  // skip vertical edges
+        if (x0 == x1) continue;  // skip vertical edges
         // find range of tiles overlapping edge
         int vxmin = glnvg__clampi(((int)(glnvg__minf(x0, x1) - ltrb[0] - 0.5f))/tilew, 0, xtiles-1);
         int vxmax = glnvg__clampi(((int)(glnvg__maxf(x0, x1) - ltrb[0] + 0.5f))/tilew, 0, xtiles-1);
         int vymax = glnvg__clampi(((int)(glnvg__maxf(y0, y1) - ltrb[1] + 0.5f))/tileh, 0, ytiles-1);
         // write edge to each tile
-        for(int ix = vxmin; ix <= vxmax; ++ix) {
-          for(int iy = pymin; iy <= vymax; ++iy) {
+        for (int ix = vxmin; ix <= vxmax; ++ix) {
+          for (int iy = pymin; iy <= vymax; ++iy) {
             GLNVGtile* tile = &gl->tiles[xtiles*iy + ix];
-            if(tile->nedges + 1 > tile->cedges) {
+            if (tile->nedges + 1 > tile->cedges) {
               tile->cedges = glnvg__maxi(2*tile->cedges, 16);
               tile->edges = (float*)realloc(tile->edges, 4*sizeof(float)*tile->cedges);
             }
             float* vtx = tile->edges + 4*tile->nedges;
-            if(tile->nedges > 0) {
+            if (tile->nedges > 0) {
               // combine (flatten) connected edges lying entirely above this tile
               float tymax = (iy+1)*tileh + ltrb[1];
-              if(y0 > tymax && y1 > tymax && vtx[-3] > tymax && x0 == vtx[-2] && y0 == vtx[-1]) {
+              if (y0 > tymax && y1 > tymax && vtx[-3] > tymax && x0 == vtx[-2] && y0 == vtx[-1]) {
                 vtx[-2] = x1; vtx[-1] = y1;
                 continue;
               }
@@ -1381,18 +1380,18 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
     triidx = glnvg__allocVerts(gl, 4*ncalls);
     if (triidx < 0) goto error;
     // create call for each (non-empty) tile
-    if(ncalls > 1 && glnvg__allocCalls(gl, ncalls-1) < 0) goto error;
+    if (ncalls > 1 && glnvg__allocCalls(gl, ncalls-1) < 0) goto error;
     callidx = call0;
 
-    for(int ix = 0; ix < xtiles; ++ix) {
-      for(int iy = 0; iy < ytiles; ++iy) {
+    for (int ix = 0; ix < xtiles; ++ix) {
+      for (int iy = 0; iy < ytiles; ++iy) {
         GLNVGtile* tile = &gl->tiles[xtiles*iy + ix];
         if (tile->nedges == 0) continue;
         call = &gl->calls[callidx];
         float tilebounds[4] = {ltrb[0] + ix*tilew, ltrb[1] + iy*tileh,
             glnvg__minf(ltrb[2], ltrb[0] + (ix+1)*tilew), glnvg__minf(ltrb[3], ltrb[1] + (iy+1)*tileh)};
         memcpy(&gl->edges[edgeidx], tile->edges, sizeof(NVGvertex) * tile->nedges);
-        if(callidx != call0)
+        if (callidx != call0)
           memcpy(call, &gl->calls[call0], sizeof(GLNVGcall));
         call->fillOffset = edgeidx;
         call->fillCount = tile->nedges;
@@ -1405,10 +1404,22 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
         tile->nedges = 0;  // reset tile
       }
     }
-  }
-  else {
-    ltrb[0] = ltrb[1] = 1e6f;
-    ltrb[2] = ltrb[3] = -1e6f;
+  } else if(ncalls == 1) {
+    edgeidx = glnvg__allocEdges(gl, nedges);
+    if (edgeidx < 0) goto error;
+    triidx = glnvg__allocVerts(gl, 4);
+    if (triidx < 0) goto error;
+    call->fillOffset = edgeidx;
+    call->fillCount = nedges;
+    call->triangleOffset = triidx;
+    call->triangleCount = 4;
+    for (i = 0; i < npaths; i++) {
+      memcpy(&gl->edges[edgeidx], paths[i].fill, sizeof(NVGvertex) * paths[i].nfill);
+      edgeidx += paths[i].nfill;
+    }
+    glnvg__quad(&gl->verts[triidx], ltrb, 0.5f);  // ncalls > 1 ? ltrb : bounds
+  } else {
+    float callbnds[4] = {1e6f, 1e6f, -1e6f, -1e6f};
     edgeidx = glnvg__allocEdges(gl, nedges);
     if (edgeidx < 0) goto error;
     triidx = glnvg__allocVerts(gl, 4*ncalls);
@@ -1421,29 +1432,36 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
       memcpy(&gl->edges[edgeidx], paths[i].fill, sizeof(NVGvertex) * paths[i].nfill);
       edgeidx += paths[i].nfill;
       nedges += paths[i].nfill;
-      ltrb[0] = glnvg__minf(ltrb[0], paths[i].bounds[0]);
-      ltrb[1] = glnvg__minf(ltrb[1], paths[i].bounds[1]);
-      ltrb[2] = glnvg__maxf(ltrb[2], paths[i].bounds[2]);
-      ltrb[3] = glnvg__maxf(ltrb[3], paths[i].bounds[3]);
+      callbnds[0] = glnvg__minf(callbnds[0], paths[i].bounds[0]);
+      callbnds[1] = glnvg__minf(callbnds[1], paths[i].bounds[1]);
+      callbnds[2] = glnvg__maxf(callbnds[2], paths[i].bounds[2]);
+      callbnds[3] = glnvg__maxf(callbnds[3], paths[i].bounds[3]);
 
-      if(i + 1 == npaths || paths[i+1].restart) {
-        call = &gl->calls[callidx];
-        if(callidx != call0)
-          memcpy(call, &gl->calls[call0], sizeof(GLNVGcall));
-        call->fillOffset = edgeidx - nedges;
-        call->fillCount = nedges;
-        call->triangleOffset = triidx;
-        call->triangleCount = 4;
-        //ltrb[0] = glnvg__clampf(ltrb[0], 0, gl->view[0]);
-        //ltrb[1] = glnvg__clampf(ltrb[1], 0, gl->view[1]);
-        //ltrb[2] = glnvg__clampf(ltrb[2], 0, gl->view[0]);
-        //ltrb[3] = glnvg__clampf(ltrb[3], 0, gl->view[1]);
-        glnvg__quad(&gl->verts[triidx], ltrb, 0.5f);  // ncalls > 1 ? ltrb : bounds
-        triidx += call->triangleCount;
-        ++callidx;
+      if (i + 1 == npaths || paths[i+1].restart) {
+        callbnds[0] = glnvg__maxf(ltrb[0], callbnds[0]);
+        callbnds[1] = glnvg__maxf(ltrb[1], callbnds[1]);
+        callbnds[2] = glnvg__minf(ltrb[2], callbnds[2]);
+        callbnds[3] = glnvg__minf(ltrb[3], callbnds[3]);
+        if (callbnds[0] >= callbnds[2] || callbnds[1] >= callbnds[3]) {
+          gl->ncalls--;
+          gl->nverts -= 4;
+          gl->nedges -= nedges;
+          edgeidx -= nedges;
+        } else {
+          call = &gl->calls[callidx];
+          if (callidx != call0)
+            memcpy(call, &gl->calls[call0], sizeof(GLNVGcall));
+          call->fillOffset = edgeidx - nedges;
+          call->fillCount = nedges;
+          call->triangleOffset = triidx;
+          call->triangleCount = 4;
+          glnvg__quad(&gl->verts[triidx], callbnds, 0.5f);  // ncalls > 1 ? ltrb : bounds
+          triidx += call->triangleCount;
+          ++callidx;
+        }
         nedges = 0;
-        ltrb[0] = ltrb[1] = 1e6f;
-        ltrb[2] = ltrb[3] = -1e6f;
+        callbnds[0] = callbnds[1] = 1e6f;
+        callbnds[2] = callbnds[3] = -1e6f;
       }
     }
   }
