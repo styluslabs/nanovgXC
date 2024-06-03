@@ -1261,12 +1261,11 @@ static void nvg__vset(NVGvertex* vtx, float x, float y, float u, float v)
   nvg__vset2(vtx, x, y, u, v, 0, 0);
 }
 
-static NVGvertex* nvg__segment(NVGvertex* vtx, float x0, float y0, float x1, float y1)
+static void nvg__segment(NVGvertex* vtx, float x0, float y0, float x1, float y1)
 {
   //fprintf(stderr, "Segment: (%f, %f) to (%f, %f)\n", x0, y0, x1, y1);
   // final vertices are now created in backend
-  nvg__vset2(vtx++, x0, y0, x1, y1, 0, 0);
-  return vtx;
+  nvg__vset2(vtx, x0, y0, x1, y1, 0, 0);
 }
 
 static void nvg__tesselateBezier(NVGcontext* ctx,
@@ -1436,7 +1435,7 @@ static int nvg__curveDivs(float r, float arc, float tol)
 }
 
 // approximate CCW arc from p0 to p1 w/ center pc and radius w, using ncap line segments per 180 deg
-static NVGvertex* nvg__arcJoin(NVGvertex* dst, float x0, float y0, float x1, float y1, float xc, float yc, float w, int ncap)
+static NVGvertex* nvg__arcJoin(NVGvertex* dst, float x0, float y0, float x1, float y1, float xc, float yc, float w, int ncap, int dir)
 {
   int i, n;
   float ax, ay;
@@ -1451,7 +1450,7 @@ static NVGvertex* nvg__arcJoin(NVGvertex* dst, float x0, float y0, float x1, flo
     float rx = xc + cosf(a) * w;
     float ry = yc + sinf(a) * w;
     if(i > 0)
-      dst = nvg__segment(dst, ax, ay, rx, ry);
+      dir < 0 ? nvg__segment(--dst, ax, ay, rx, ry) : nvg__segment(dst++, ax, ay, rx, ry);
     ax = rx;  ay = ry;
   }
   return dst;
@@ -1461,8 +1460,7 @@ static NVGvertex* nvg__arcJoin(NVGvertex* dst, float x0, float y0, float x1, flo
 static int nvg__expandStroke(NVGcontext* ctx, float strokeWidth, int lineCap, int lineJoin, float miterLimit)
 {
   NVGpathCache* cache = ctx->cache;
-  NVGvertex* verts;
-  NVGvertex* dst;
+  NVGvertex* verts, *vertsend, *dst, *rdst;
   float w = 0.5f * strokeWidth;
   int i, j, csegs = 0;
   int ncap = nvg__curveDivs(w, NVG_PI, ctx->tessTol);	// Calculate divisions per half circle.
@@ -1478,6 +1476,7 @@ static int nvg__expandStroke(NVGcontext* ctx, float strokeWidth, int lineCap, in
   }
 
   verts = nvg__allocTempVerts(ctx, 6*csegs);
+  vertsend = verts + 6*csegs;
   if (verts == NULL) return 0;
 
   for (i = 0; i < cache->npaths; ++i) {
@@ -1522,6 +1521,7 @@ static int nvg__expandStroke(NVGcontext* ctx, float strokeWidth, int lineCap, in
     }
 
     dst = verts;
+    rdst = vertsend;
     path->fill = dst;
     // init left and right paths at p0
     d01x = p1->x - p0->x;  d01y = p1->y - p0->y;
@@ -1533,15 +1533,15 @@ static int nvg__expandStroke(NVGcontext* ctx, float strokeWidth, int lineCap, in
       rx = p0->x - w*n01x;  ry = p0->y - w*n01y;
       // start cap
       if (lineCap == NVG_BUTT)
-        dst = nvg__segment(dst, rx, ry, lx, ly);
+        nvg__segment(dst++, rx, ry, lx, ly);
       else if (lineCap == NVG_SQUARE) {
         float cdx = n01y*w, cdy = -n01x*w;  // = w*normalized(d01);
-        dst = nvg__segment(dst, rx, ry, rx - cdx, ry - cdy);
-        dst = nvg__segment(dst, rx - cdx, ry - cdy, lx - cdx, ly - cdy);
-        dst = nvg__segment(dst, lx - cdx, ly - cdy, lx, ly);
+        nvg__segment(dst++, rx, ry, rx - cdx, ry - cdy);
+        nvg__segment(dst++, rx - cdx, ry - cdy, lx - cdx, ly - cdy);
+        nvg__segment(dst++, lx - cdx, ly - cdy, lx, ly);
       }
       else if (lineCap == NVG_ROUND)
-        dst = nvg__arcJoin(dst, rx, ry, lx, ly, p0->x, p0->y, w, ncap);
+        dst = nvg__arcJoin(dst, rx, ry, lx, ly, p0->x, p0->y, w, ncap, 1);
     }
 
     for (j = closed ? 0 : 2; j < path->count; ++j) {
@@ -1576,15 +1576,15 @@ static int nvg__expandStroke(NVGcontext* ctx, float strokeWidth, int lineCap, in
         l12x = p1->x + w*n12x; l12y = p1->y + w*n12y;
       }
       if(j > 0)
-        dst = nvg__segment(dst, lx, ly, l01x, l01y);  // first segment (and only for miter join)
+        nvg__segment(dst++, lx, ly, l01x, l01y);  // first segment (and only for miter join)
       else {
         l00x = l01x;
         l00y = l01y;
       }
       if(ljoin == NVG_ROUND)
-        dst = nvg__arcJoin(dst, l01x, l01y, l12x, l12y, p1->x, p1->y, w, ncap);
+        dst = nvg__arcJoin(dst, l01x, l01y, l12x, l12y, p1->x, p1->y, w, ncap, 1);
       else if(ljoin == NVG_BEVEL)
-        dst = nvg__segment(dst, l01x, l01y, l12x, l12y);
+        nvg__segment(dst++, l01x, l01y, l12x, l12y);
       lx = l12x; ly = l12y;
 
       // now right side path - note segment directions are reversed
@@ -1595,15 +1595,15 @@ static int nvg__expandStroke(NVGcontext* ctx, float strokeWidth, int lineCap, in
         r12x = p1->x - w*n12x; r12y = p1->y - w*n12y;
       }
       if(j > 0)
-        dst = nvg__segment(dst, r01x, r01y, rx, ry);  // first segment (and only for miter join)
+        nvg__segment(--rdst, r01x, r01y, rx, ry);  // first segment (and only for miter join)
       else {
         r00x = r01x;
         r00y = r01y;
       }
       if(rjoin == NVG_ROUND)
-        dst = nvg__arcJoin(dst, r12x, r12y, r01x, r01y, p1->x, p1->y, w, ncap);
+        rdst = nvg__arcJoin(rdst, r12x, r12y, r01x, r01y, p1->x, p1->y, w, ncap, -1);
       else if(rjoin == NVG_BEVEL)
-        dst = nvg__segment(dst, r12x, r12y, r01x, r01y);
+        nvg__segment(--rdst, r12x, r12y, r01x, r01y);
       rx = r12x; ry = r12y;
 
       p0 = p1;
@@ -1615,29 +1615,33 @@ static int nvg__expandStroke(NVGcontext* ctx, float strokeWidth, int lineCap, in
       // final segments
       float l01x = p1->x + w*n01x, l01y = p1->y + w*n01y;
       float r01x = p1->x - w*n01x, r01y = p1->y - w*n01y;
-      dst = nvg__segment(dst, lx, ly, l01x, l01y);
+      nvg__segment(dst++, lx, ly, l01x, l01y);
       lx = l01x; ly = l01y;
-      dst = nvg__segment(dst, r01x, r01y, rx, ry);
+      nvg__segment(--rdst, r01x, r01y, rx, ry);
       rx = r01x; ry = r01y;
 
       // end cap
       if (lineCap == NVG_BUTT)
-        dst = nvg__segment(dst, lx, ly, rx, ry);
+        nvg__segment(dst++, lx, ly, rx, ry);
       else if (lineCap == NVG_SQUARE) {
         float cdx = n01y*w, cdy = -n01x*w;  // = w*normalized(d01);
-        dst = nvg__segment(dst, lx, ly, lx + cdx, ly + cdy);
-        dst = nvg__segment(dst, lx + cdx, ly + cdy, rx + cdx, ry + cdy);
-        dst = nvg__segment(dst, rx + cdx, ry + cdy, rx, ry);
+        nvg__segment(dst++, lx, ly, lx + cdx, ly + cdy);
+        nvg__segment(dst++, lx + cdx, ly + cdy, rx + cdx, ry + cdy);
+        nvg__segment(dst++, rx + cdx, ry + cdy, rx, ry);
       }
       else if (lineCap == NVG_ROUND)
-        dst = nvg__arcJoin(dst, lx, ly, rx, ry, p1->x, p1->y, w, ncap);
+        dst = nvg__arcJoin(dst, lx, ly, rx, ry, p1->x, p1->y, w, ncap, 1);
     }
     else {
       // close loop
-      dst = nvg__segment(dst, lx, ly, l00x, l00y);
-      dst = nvg__segment(dst, r00x, r00y, rx, ry);
+      nvg__segment(dst++, lx, ly, l00x, l00y);
+      nvg__segment(--rdst, r00x, r00y, rx, ry);
     }
 
+    // segments for "right" side of path are added in reverse order at end of buffer, then copied to end of
+    //  "left" side segments so that segments are in order, not interleaved (for vtex renderer optimization)
+    memmove(dst, rdst, (vertsend - rdst)*sizeof(NVGvertex));
+    dst += vertsend - rdst;
     path->nfill = (int)(dst - verts);
     verts = dst;
   }
@@ -1743,7 +1747,7 @@ static int nvg__expandFill(NVGcontext* ctx)  //, float w, int lineJoin, float mi
 
     path->fill = verts;
     for (j = 0; j < path->count; ++j) {
-      verts = nvg__segment(verts, p0->x, p0->y, p1->x, p1->y);
+      nvg__segment(verts++, p0->x, p0->y, p1->x, p1->y);
       p0 = p1++;
     }
     path->nfill = (int)(verts - path->fill);
