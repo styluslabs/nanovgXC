@@ -367,6 +367,7 @@ static float swnvg__clampf(float a, float mn, float mx) { return a < mn ? mn : (
 static int swnvg__maxi(int a, int b) { return a < b ? b : a; }
 static int swnvg__mini(int a, int b) { return a < b ? a : b; }
 static int swnvg__clampi(int a, int mn, int mx) { return a < mn ? mn : (a > mx ? mx : a); }
+static float swnvg__absf(float a) { return a >= 0.0f ? a : -a; }
 
 #define COLOR0(c) (c & 0xff)
 #define COLOR1(c) ((c >> 8) & 0xff)
@@ -1551,6 +1552,20 @@ static void swnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOper
     gl->verts[offset++] = verts[i];
     gl->verts[offset++] = verts[i+1];
   }
+
+  call->bounds[0] = 0; call->bounds[1] = 0; call->bounds[2] = gl->width-1; call->bounds[3] = gl->height-1;
+  // cut and paste from nanovg.c - alternative is to pass scissor bounds to renderTriangles()
+  if (scissor->extent[0] > -0.5f && scissor->extent[1] > -0.5f) {
+    float* sxform = scissor->xform;
+    // path bounds will be clipped to AABB of scissor
+    float tex = scissor->extent[0]*swnvg__absf(sxform[0]) + scissor->extent[1]*swnvg__absf(sxform[2]);
+    float tey = scissor->extent[0]*swnvg__absf(sxform[1]) + scissor->extent[1]*swnvg__absf(sxform[3]);
+    call->bounds[0] = swnvg__maxi(call->bounds[0], floorf(sxform[4]-tex));
+    call->bounds[1] = swnvg__maxi(call->bounds[1], floorf(sxform[5]-tey));
+    call->bounds[2] = swnvg__mini(call->bounds[2], ceilf(sxform[4]+tex));
+    call->bounds[3] = swnvg__mini(call->bounds[3], ceilf(sxform[5]+tey));
+  }
+
   swnvg__convertPaint(gl, call, paint, scissor, 0);
   call->type = SWNVG_PAINT_ATLAS;
   return;

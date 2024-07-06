@@ -1576,7 +1576,7 @@ static int nvg__expandStroke(NVGcontext* ctx, float strokeWidth, int lineCap, in
         l12x = p1->x + w*n12x; l12y = p1->y + w*n12y;
       }
       if(j > 0)
-        nvg__segment(dst++, lx, ly, l01x, l01y);  // first segment (and only for miter join)
+        nvg__segment(dst++, lx, ly, l01x, l01y);  // first segment (and only segment for miter join)
       else {
         l00x = l01x;
         l00y = l01y;
@@ -1595,7 +1595,7 @@ static int nvg__expandStroke(NVGcontext* ctx, float strokeWidth, int lineCap, in
         r12x = p1->x - w*n12x; r12y = p1->y - w*n12y;
       }
       if(j > 0)
-        nvg__segment(--rdst, r01x, r01y, rx, ry);  // first segment (and only for miter join)
+        nvg__segment(--rdst, r01x, r01y, rx, ry);  // first segment (and only segment for miter join)
       else {
         r00x = r01x;
         r00y = r01y;
