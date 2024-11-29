@@ -51,9 +51,11 @@ enum NVGLcreateFlags {
 #define NVG_HAS_EXT(ext) (GLAD_GL_##ext)
 #elif defined(GLEW_VERSION)
 #define NVG_HAS_EXT(ext) (GLEW_##ext)
-#else
+#elif defined(__APPLE__) && (TARGET_IPHONE_SIMULATOR || TARGET_OS_IPHONE)
 // assumes GL_##ext is defined
 #define NVG_HAS_EXT(ext) (1)
+#else
+#define NVG_HAS_EXT(ext) (strstr((const char*)glGetString(GL_EXTENSIONS), #ext) != NULL)
 #endif
 #endif
 
@@ -1117,6 +1119,25 @@ static void glnvg__setUniforms(GLNVGcontext* gl, int uniformOffset, int image)
   }
 }
 
+static void glnvg__renderCancel(void* uptr)
+{
+  int i;
+  GLNVGcontext* gl = (GLNVGcontext*)uptr;
+  gl->nverts = 0;
+  gl->npaths = 0;
+  gl->ncalls = 0;
+  gl->nuniforms = 0;
+
+  // clear temporary textures (e.g., for which user didn't save handle)
+  for (i = 0; i < gl->ntextures; i++) {
+    if (gl->textures[i].flags & NVG_IMAGE_DISCARD) {
+      if (gl->textures[i].tex != 0 && (gl->textures[i].flags & NVG_IMAGE_NODELETE) == 0)
+        glDeleteTextures(1, &gl->textures[i].tex);
+      memset(&gl->textures[i], 0, sizeof(gl->textures[i]));
+    }
+  }
+}
+
 static void glnvg__renderViewport(void* uptr, float width, float height, float devicePixelRatio)
 {
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
@@ -1135,6 +1156,8 @@ static void glnvg__renderViewport(void* uptr, float width, float height, float d
   }
   gl->view[0] = width;
   gl->view[1] = height;
+
+  glnvg__renderCancel(uptr);  // reset
 }
 
 // Apparently, rasterization for pixels exactly on edges can differ between a FBO and default framebuffer (in
@@ -1207,25 +1230,6 @@ static void glnvg__triangles(GLNVGcontext* gl, GLNVGcall* call)
   glnvg__setUniforms(gl, call->uniformOffset, call->image);
   glDrawArrays(GL_TRIANGLES, call->triangleOffset, call->triangleCount);
   glnvg__checkError(gl, "triangles fill");
-}
-
-static void glnvg__renderCancel(void* uptr)
-{
-  int i;
-  GLNVGcontext* gl = (GLNVGcontext*)uptr;
-  gl->nverts = 0;
-  gl->npaths = 0;
-  gl->ncalls = 0;
-  gl->nuniforms = 0;
-
-  // clear temporary textures (e.g., for which user didn't save handle)
-  for (i = 0; i < gl->ntextures; i++) {
-    if (gl->textures[i].flags & NVG_IMAGE_DISCARD) {
-      if (gl->textures[i].tex != 0 && (gl->textures[i].flags & NVG_IMAGE_NODELETE) == 0)
-        glDeleteTextures(1, &gl->textures[i].tex);
-      memset(&gl->textures[i], 0, sizeof(gl->textures[i]));
-    }
-  }
 }
 
 static GLenum glnvg_convertBlendFuncFactor(int factor)
@@ -1488,7 +1492,7 @@ static void glnvg__renderFlush(void* uptr)
   }
   glnvg__checkError(gl, "windingTex unbind");
 
-  glnvg__renderCancel(uptr);
+  //glnvg__renderCancel(uptr);  -- we now reset at start of frame to allow frame to be drawn more than once
 }
 
 static GLNVGcall* glnvg__allocCall(GLNVGcontext* gl)
