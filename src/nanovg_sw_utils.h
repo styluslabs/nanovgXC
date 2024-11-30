@@ -4,7 +4,19 @@
 #ifndef NANOVG_SW_UTILS_H
 #define NANOVG_SW_UTILS_H
 
-// TODO: make this "private" and provide getWidth, getHeight fns
+typedef struct NVGSWUblitter NVGSWUblitter;
+
+NVGSWUblitter* nvgswuCreateBlitter();
+void nvgswuSetBlend(int blend);
+// width, height specify total size of pixels; x,y,w,h specify region to update
+void nvgswuBlit(NVGSWUblitter* ctx, void* pixels, int width, int height, int x, int y, int w, int h);
+void nvgswuBlitTex(NVGSWUblitter* ctx, unsigned int tex, int flipped);
+void nvgswuDeleteBlitter(NVGSWUblitter* ctx);
+
+#endif // NANOVG_SW_UTILS_H
+
+#ifdef NANOVG_SW_IMPLEMENTATION
+
 struct NVGSWUblitter {
   GLuint vert, frag, prog;
   GLuint vao;
@@ -12,17 +24,6 @@ struct NVGSWUblitter {
   GLuint tex;
   int width, height;
 };
-typedef struct NVGSWUblitter NVGSWUblitter;
-
-NVGSWUblitter* nvgswuCreateBlitter();
-void nvgswuSetBlend(int blend);
-// width, height specify total size of pixels; x,y,w,h specify region to update
-void nvgswuBlit(NVGSWUblitter* ctx, void* pixels, int width, int height, int x, int y, int w, int h);
-void nvgswuDeleteBlitter(NVGSWUblitter* ctx);
-
-#endif // NANOVG_SW_UTILS_H
-
-#ifdef NANOVG_SW_IMPLEMENTATION
 
 #define NVGSWU_QUOTE(s) #s
 
@@ -63,8 +64,7 @@ static const char* screenFrag = NVGSWU_QUOTE(
 );
 
 // these can be drawn as 6 GL_TRIANGLES verts or 4 GL_TRIANGLE_STRIP verts
-// note that v (y texture coord) is flipped to flip the image being blitted
-static GLfloat quadVertices[][4] = {
+static GLfloat flippedQuad[][4] = {
   { 1.0f,  1.0f,  1.0f, 0.0f},  // x y u v
   { 1.0f, -1.0f,  1.0f, 1.0f},
   {-1.0f,  1.0f,  0.0f, 0.0f},
@@ -72,6 +72,16 @@ static GLfloat quadVertices[][4] = {
   {-1.0f, -1.0f,  0.0f, 1.0f},
   {-1.0f,  1.0f,  0.0f, 0.0f},
   { 1.0f, -1.0f,  1.0f, 1.0f}
+};
+
+static GLfloat uprightQuad[][4] = {
+  { 1.0f,  1.0f,  1.0f, 1.0f},  // x y u v
+  { 1.0f, -1.0f,  1.0f, 0.0f},
+  {-1.0f,  1.0f,  0.0f, 1.0f},
+
+  {-1.0f, -1.0f,  0.0f, 0.0f},
+  {-1.0f,  1.0f,  0.0f, 1.0f},
+  { 1.0f, -1.0f,  1.0f, 0.0f}
 };
 
 static void checkGLError(const char* str)
@@ -191,17 +201,26 @@ void nvgswuBlit(NVGSWUblitter* ctx, void* pixels, int width, int height, int x, 
   else
     glBindTexture(GL_TEXTURE_2D, ctx->tex);
 
+  glViewport(0, 0, width, height);  // this is needed in case window size changes!
+  nvgswuBlitTex(ctx, 0, 1);
+}
+
+void nvgswuBlitTex(NVGSWUblitter* ctx, GLuint tex, int flipped)
+{
+  if(tex > 0) {
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+  }
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_STENCIL_TEST);
   glDisable(GL_CULL_FACE);
-  glViewport(0, 0, width, height);  // this is needed in case window size changes!
   glUseProgram(ctx->prog);
   glUniform1i(glGetUniformLocation(ctx->prog, "texFramebuffer"), 0);
 #if defined(NVGSWU_GL3) || defined(NVGSWU_GLES3)
   glBindVertexArray(ctx->vao);
 #endif
   glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
-  glBufferData(GL_ARRAY_BUFFER, 6*4*sizeof(GLfloat), quadVertices, GL_STREAM_DRAW);
+  glBufferData(GL_ARRAY_BUFFER, 6*4*sizeof(GLfloat), flipped ? flippedQuad : uprightQuad, GL_STREAM_DRAW);
   glEnableVertexAttribArray(0);
   glEnableVertexAttribArray(1);
   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4*sizeof(GLfloat), 0);

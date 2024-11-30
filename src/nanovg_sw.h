@@ -753,33 +753,28 @@ static float texFetchLerp(SWNVGtexture* tex, float ijx, float ijy)  //, int ijmi
 }
 
 // Super-sampled SDF text - nvgFontBlur can be used to make thicker or thinner
-static float sdfCov(float D, float sdfscale, float sdfoffset)
+static float sdfCov(float D, float invsdfscale, float sdfoffset)
 {
-  return D > 0.0f ? swnvg__clampf((D - 255.0f*0.5f)/sdfscale + sdfoffset, 0.0f, 1.0f) : 0.0f;
+  return D > 0.0f ? swnvg__clampf((D - 255.0f*0.5f)*invsdfscale + sdfoffset, 0.0f, 1.0f) : 0.0f;
 }
 
 static float superSDF(SWNVGtexture* tex, float s, float dr, float ijx, float ijy, float dx, float dy) //, int ijminx, int ijminy, int ijmaxx, int ijmaxy)
 {
-  //int ij0x = swnvg__clampi((int)(ijx + 0.5f), ijminx, ijmaxx);
-  //int ij0y = swnvg__clampi((int)(ijy + 0.5f), ijminy, ijmaxy);
-  //float d = texFetch(tex, ij0x, ij0y);
-
   // check distance from center of nearest pixel and exit early if large enough
   // doesn't help at all for very small font sizes, but >50% for larger sizes
   float d = texFetch(tex, (int)(ijx + 0.5f), (int)(ijy + 0.5f));
-  float sd = (d - 255.0f*0.5f)/s + (dr - 0.5f);  // note we're still using the half pixel scale here
+  float sd = (d - 255.0f*0.5f)*s + (dr - 0.5f);  // note we're still using the half pixel scale here
   if(sd < -1.415f) return 0;  // sqrt(2) ... verified experimentally
   if(sd > 1.415f) return 1.0f;
 
   // prevent out-of-bounds read; note that GL SDF renderer does not clamp to glyph cell bounds either
   if(ijx - dx < 0 || ijy - dy < 0 || ijx + dx + 1 >= tex->width || ijy + dy + 1 >= tex->height)
-    return sdfCov(texFetchLerp(tex, ijx, ijy), 2*s, dr);  // single sample
+    return sdfCov(texFetchLerp(tex, ijx, ijy), s/2, dr);  // single sample
 
-  //return sdfCov(texFetchLerp(tex, ijx, ijy, ijminx, ijminy, ijmaxx, ijmaxy), 2*s);  // single sample
-  float d11 = texFetchLerp(tex, ijx + dx, ijy + dy);  //, ijminx, ijminy, ijmaxx, ijmaxy);
-  float d10 = texFetchLerp(tex, ijx - dx, ijy + dy);  //, ijminx, ijminy, ijmaxx, ijmaxy);
-  float d01 = texFetchLerp(tex, ijx + dx, ijy - dy);  //, ijminx, ijminy, ijmaxx, ijmaxy);
-  float d00 = texFetchLerp(tex, ijx - dx, ijy - dy);  //, ijminx, ijminy, ijmaxx, ijmaxy);
+  float d11 = texFetchLerp(tex, ijx + dx, ijy + dy);
+  float d10 = texFetchLerp(tex, ijx - dx, ijy + dy);
+  float d01 = texFetchLerp(tex, ijx + dx, ijy - dy);
+  float d00 = texFetchLerp(tex, ijx - dx, ijy - dy);
   return 0.25f*(sdfCov(d11, s, dr) + sdfCov(d10, s, dr) + sdfCov(d01, s, dr) + sdfCov(d00, s, dr));
 }
 
@@ -791,10 +786,10 @@ static void swnvg__rasterizeQuad(SWNVGthreadCtx* r, SWNVGcall* call, NVGvertex* 
   float t00 = call->tex->height * v00->y1;
   float ds = call->paintMat[0]/2;
   float dt = call->paintMat[3]/2;
-  float sdfoffset = 0, sdfscale = 0;  // init to suppress warning
+  float sdfoffset = 0, invsdfscale = 0;  // init to suppress warning
   if(gl->flags & NVG_SDF_TEXT) {
     sdfoffset = call->radius + 0.5f;
-    sdfscale = 0.5f * 32.0f*call->paintMat[0];  // 0.5 - we're sampling 4 0.5x0.5 subpixels
+    invsdfscale = 1/(0.5f * 32.0f*call->paintMat[0]);  // 0.5 - we're sampling 4 0.5x0.5 subpixels
   }
 
   int linear = call->flags & NVG_SRGB;
@@ -824,7 +819,7 @@ static void swnvg__rasterizeQuad(SWNVGthreadCtx* r, SWNVGcall* call, NVGvertex* 
     float s = s0;
     for(x = xmin; x <= xmax; ++x) {
       if(gl->flags & NVG_SDF_TEXT)
-        cover = superSDF(call->tex, sdfscale, sdfoffset, s, t, ds/2, dt/2);  //, ijminx, ijminy, ijmaxx, ijmaxy);
+        cover = superSDF(call->tex, invsdfscale, sdfoffset, s, t, ds/2, dt/2);
       else
         cover = summedTextCov(call->tex, s, t, ds, dt, ijminx, ijminy, ijmaxx, ijmaxy);
       swnvg__blend8888(dst, (int)(255.0f*cover + 0.5f), cr, cg, cb, ca, linear);

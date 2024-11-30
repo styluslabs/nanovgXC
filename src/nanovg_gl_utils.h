@@ -22,6 +22,7 @@ void nvgluSetFramebufferSRGB(int enable);
 void nvgluSetFramebufferSize(NVGLUframebuffer* fb, int w, int h, int imageFlags);
 void nvgluDeleteFramebuffer(NVGLUframebuffer* fb);
 int nvgluGetImageHandle(NVGLUframebuffer* fb);
+unsigned int nvgluGetTexture(NVGLUframebuffer* fb);
 void nvgluBlitFramebuffer(NVGLUframebuffer* fb, int destFBO);
 void nvgluReadPixels(NVGLUframebuffer* fb, void* dest);
 
@@ -140,7 +141,7 @@ void nvgluSetFramebufferSize(NVGLUframebuffer* fb, int w, int h, int imageFlags)
   fb->height = h;
 }
 
-// assumes FBO (source) is already bound; destFBO is bounds on return
+// assumes FBO (source) is already bound; destFBO is bound on return
 void nvgluBlitFramebuffer(NVGLUframebuffer* fb, int destFBO)
 {
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, destFBO);
@@ -178,12 +179,17 @@ void nvgluSetScissor(int x, int y, int w, int h)
 void nvgluClear(NVGcolor color)
 {
   glClearColor(color.r/255.0f, color.g/255.0f, color.b/255.0f, color.a/255.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
+  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 }
 
 int nvgluGetImageHandle(NVGLUframebuffer* fb)
 {
   return fb->image;
+}
+
+unsigned int nvgluGetTexture(NVGLUframebuffer* fb)
+{
+  return fb->texture;
 }
 
 void nvgluDeleteFramebuffer(NVGLUframebuffer* fb)
