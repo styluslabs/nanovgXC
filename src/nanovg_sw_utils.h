@@ -148,6 +148,7 @@ void nvgswuDeleteBlitter(NVGSWUblitter* ctx)
   glDeleteProgram(ctx->prog);
   glDeleteShader(ctx->vert);
   glDeleteShader(ctx->frag);
+  free(ctx);
 }
 
 void nvgswuSetBlend(int blend)
