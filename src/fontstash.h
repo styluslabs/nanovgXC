@@ -52,6 +52,8 @@ struct FONSparams {
   //  for GPU; atlasBlockHeight should be set to the height of these textures so that no glyphs will be
   //  split between two textures
   int atlasBlockHeight;
+  // codepoint to be used for missing glyphs
+  unsigned int notDefCodePt;
 
   void* userPtr;
   void (*userSDFRender)(void* uptr, void* fontimpl, unsigned char* output,
@@ -674,10 +676,10 @@ float fonsEmSizeToSize(FONSstate* state, float emsize)
 {
   FONScontext* stash = state->context;
   FONSfont* font;
-  if(stash == NULL) return 0;
-  if(state->font < 0 || state->font >= stash->nfonts) return 0;
+  if (stash == NULL) { return 0; }
+  if (state->font < 0 || state->font >= stash->nfonts) { return 0; }
   font = stash->fonts[state->font];
-  if(font->data == NULL) return 0;
+  if (font->data == NULL) { return 0; }
   return fons__tt_getEmToPixelsScale(&font->font, emsize)/fons__tt_getPixelHeightScale(&font->font, 1.0f);
 }
 
@@ -826,15 +828,13 @@ int fonsSetFont(FONSstate* state, int font)
 {
   // delayed loading
   FONScontext* stash = state->context;
-  if(stash == NULL) return FONS_INVALID;
-  if(font < 0 || font >= stash->nfonts)
-    font = FONS_INVALID;
-  else if(stash->fonts[font]->data && !stash->fonts[font]->dataSize) {
+  if (stash == NULL) { return FONS_INVALID; }
+  if (font < 0 || font >= stash->nfonts) { font = FONS_INVALID; }
+  else if (stash->fonts[font]->data && !stash->fonts[font]->dataSize) {
     //if(stash->lockStash) stash->lockStash(stash->lockUptr, FONS_UNLOCK_READ | FONS_LOCK_WRITE);
     fons__loadFont(stash, font);
     //if(stash->lockStash) stash->lockStash(stash->lockUptr, FONS_UNLOCK_WRITE | FONS_LOCK_READ);
-    if(!stash->fonts[font]->data)
-      font = FONS_INVALID;
+    if (!stash->fonts[font]->data) { font = FONS_INVALID; }
   }
 
   state->font = font;
@@ -879,6 +879,7 @@ static FONSglyph* fons__getGlyph(FONScontext* stash, int fontid, unsigned int co
   int pad = stash->params.flags & FONS_SDF ? stash->params.sdfPadding + 1 : 2;
   int cellw = stash->atlasFontPx, cellh = stash->atlasFontPx;  // default for summed text
   int renderFontId = fontid;
+  unsigned int notdefcp = stash->params.notDefCodePt ? stash->params.notDefCodePt : 0xFFFD;
   // reset allocator - used for stbtt_GetGlyphShape (for text as paths), not just bitmap!
   stash->nscratch = 0;
 
@@ -923,11 +924,14 @@ static FONSglyph* fons__getGlyph(FONScontext* stash, int fontid, unsigned int co
   if (g != 0 && renderFontId != fontid) {
     // glyph was found in fallback font
     FONSglyph* fallbackGlyph = fons__getGlyph(stash, renderFontId, codepoint, flags);
-    if(!fallbackGlyph) { glyph = NULL; goto done; }  // this can happen if atlas is full
+    if (!fallbackGlyph) { glyph = NULL; goto done; }  // this can happen if atlas is full
     int next = glyph ? glyph->next : font->lut[h];
     if (!glyph) {
       glyph = fons__allocGlyph(font);
       font->lut[h] = font->nglyphs-1;
+    }
+    else {
+      assert(glyph->index == fallbackGlyph->index && glyph->font == fallbackGlyph->font);
     }
     *glyph = *fallbackGlyph;  //memcpy(glyph, fallbackGlyph, sizeof(FONSglyph));
     glyph->next = next;  // restore
@@ -946,16 +950,17 @@ static FONSglyph* fons__getGlyph(FONScontext* stash, int fontid, unsigned int co
 
   // 0xFFFF is an invalid codepoint, only used to create notdef glyph
   // try "replacement character" glyph if glyph 0 is empty
-  if (codepoint == 0xFFFF && font->notDef < 0 && (x0 == x1 || y0 == y1)) {
-    glyph = fons__getGlyph(stash, fontid, 0xFFFD, flags);
+  if (codepoint == 0xFFFF && font->notDef < 0 && (x0 == x1 || y0 == y1 || stash->params.notDefCodePt)) {
+    glyph = fons__getGlyph(stash, fontid, notdefcp, flags);
     goto done;
   }
 
   // we use glyph.index = -1 to have glyph reference notdef glyph so we only need a single notdef bitmap
-  if (g == 0 && codepoint != 0xFFFF && codepoint != 0xFFFD) {
+  if (g == 0 && codepoint != 0xFFFF && codepoint != notdefcp) {
     if (font->notDef < 0) {  // notdef not created yet
-      fons__getGlyph(stash, fontid, 0xFFFF, flags);
-      font->notDef = font->nglyphs-1;
+      FONSglyph* notdefGlyph = fons__getGlyph(stash, fontid, 0xFFFF, flags);
+      font->notDef = notdefGlyph - font->glyphs;
+      assert(font->notDef >= 0 && font->notDef < font->nglyphs);
     }
     g = -1;  // this glyph will reference notDef
   }
@@ -1000,12 +1005,12 @@ static FONSglyph* fons__getGlyph(FONScontext* stash, int fontid, unsigned int co
   if (flags & FONS_GLYPH_BITMAP_REQUIRED) {
     // Rasterize if not empty glyph; we assume texData for the cell has been cleared to all zeros
     if (x1 > x0 && y1 > y0) {
-      if(stash->params.flags & FONS_SUMMED) {
+      if (stash->params.flags & FONS_SUMMED) {
         FONStexelF* dst = (FONStexelF*)stash->texData + (gx+pad + (gy+pad)*stash->atlas->width);
         fons__tt_renderGlyphBitmapSummed(&font->font, dst, cellw - pad, cellh - pad, stash->atlas->width, scale, g);
       } else if (stash->params.flags & FONS_SDF) {
         FONStexelU8* dst = (FONStexelU8*)stash->texData + (gx + gy*stash->atlas->width);
-        if(stash->params.userSDFRender)
+        if (stash->params.userSDFRender)
           stash->params.userSDFRender(stash->params.userPtr,
               &font->font, dst, cellw, cellh, stash->atlas->width, scale, pad, g);
         else
@@ -1101,7 +1106,7 @@ int fonsTextIterInit(FONSstate* state, FONStextIter* iter,
 
   iter->size = state->size;
   iter->blur = stash->params.flags & FONS_SDF ? state->blur : 0;
-  if(iter->blur > stash->params.sdfPadding) iter->blur = stash->params.sdfPadding;
+  if (iter->blur > stash->params.sdfPadding) { iter->blur = stash->params.sdfPadding; }
 
   // Align vertically.
   y += fons__getVertAlign(stash, stash->fonts[iter->font], state->align, iter->size);
