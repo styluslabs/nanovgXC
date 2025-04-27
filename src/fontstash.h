@@ -959,6 +959,7 @@ static FONSglyph* fons__getGlyph(FONScontext* stash, int fontid, unsigned int co
   if (g == 0 && codepoint != 0xFFFF && codepoint != notdefcp) {
     if (font->notDef < 0) {  // notdef not created yet
       FONSglyph* notdefGlyph = fons__getGlyph(stash, fontid, 0xFFFF, flags);
+      if (!notdefGlyph) { glyph = NULL; goto done; }  // this can happen if atlas is full
       font->notDef = notdefGlyph - font->glyphs;
       assert(font->notDef >= 0 && font->notDef < font->nglyphs);
     }
