@@ -1179,8 +1179,6 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
       int count = swnvg__mini(lims[1], xb1) - lims[0] + 1;
       unsigned char* dst = &gl->bitmap[iy*gl->stride + lims[0]*4];
       float* dcover = &gl->covtex[iy*gl->width + lims[0]];
-      lims[0] = gl->width; lims[1] = 0;  // reset limits for this scanline
-      lims += 2;
 
       if (!complex) {
         // handle solid color directly for better performance
@@ -1218,8 +1216,11 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
           }
           *sl = icover;
         }
-        swnvg__scanlineSolid(dst, count, r->scanline, xb0, iy, call);
+        swnvg__scanlineSolid(dst, count, r->scanline, lims[0], iy, call);
       }
+
+      lims[0] = gl->width; lims[1] = 0;  // reset limits for this scanline
+      lims += 2;
     }
   }
 }
