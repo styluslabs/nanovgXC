@@ -93,7 +93,7 @@ static void checkGLError(const char* str)
 
 NVGSWUblitter* nvgswuCreateBlitter()
 {
-  //GLint status;
+  GLint status;
   NVGSWUblitter* ctx = (NVGSWUblitter*)calloc(1, sizeof(NVGSWUblitter));
 
   const char* shaderVer =
@@ -119,16 +119,19 @@ NVGSWUblitter* nvgswuCreateBlitter()
   glShaderSource(ctx->vert, 2, vertSrc, 0);
   glShaderSource(ctx->frag, 2, fragSrc, 0);
   glCompileShader(ctx->vert);
-  //glGetShaderiv(ctx->vert, GL_COMPILE_STATUS, &status); if (status != GL_TRUE) glnvg__dumpShaderError(ctx->vert, "vert", "vert");
+  glGetShaderiv(ctx->vert, GL_COMPILE_STATUS, &status);
+  if (status != GL_TRUE) { NVG_LOG("nvgswuCreateBlitter: error compiling vert shader"); }
   glCompileShader(ctx->frag);
-  //glGetShaderiv(ctx->frag, GL_COMPILE_STATUS, &status); if (status != GL_TRUE) glnvg__dumpShaderError(ctx->frag, "frag", "frag");
+  glGetShaderiv(ctx->frag, GL_COMPILE_STATUS, &status);
+  if (status != GL_TRUE) { NVG_LOG("nvgswuCreateBlitter: error compiling frag shader"); }
   glAttachShader(ctx->prog, ctx->vert);
   glAttachShader(ctx->prog, ctx->frag);
   // locations for glVertexAttribPointer
   glBindAttribLocation(ctx->prog, 0, "position_in");
   glBindAttribLocation(ctx->prog, 1, "texcoord_in");
   glLinkProgram(ctx->prog);
-  //glGetProgramiv(prog, GL_LINK_STATUS, &status); if (status != GL_TRUE) glnvg__dumpProgramError(ctx->prog, "Program");
+  glGetProgramiv(ctx->prog, GL_LINK_STATUS, &status);
+  if (status != GL_TRUE) { NVG_LOG("nvgswuCreateBlitter: error linking shader"); }
 
   glGenBuffers(1, &ctx->vbo);
 #if defined(NVGSWU_GL3) || defined(NVGSWU_GLES3)

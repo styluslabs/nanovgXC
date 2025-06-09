@@ -1482,14 +1482,15 @@ static int nvg__expandStroke(NVGcontext* ctx, float strokeWidth, int lineCap, in
   for (i = 0; i < cache->npaths; ++i) {
     NVGpath* path = &cache->paths[i];
     NVGpoint* pts = &cache->points[path->first];
-    NVGpoint* p0;
-    NVGpoint* p1;
-    NVGpoint* p2;
+    NVGpoint* p0 = NULL;
+    NVGpoint* p1 = NULL;
+    NVGpoint* p2 = NULL;  // init to suppress maybe-uninitialized warning
     NVGpoint temppt;
     int closed = path->closed && path->count > 2;
-    float lx, ly, rx, ry;  // current position of left and right paths
-    float d01x, d01y, n01x, n01y;  // d01 is p0 -> p1 vector; n01 is the normal to d01
-    float l00x, l00y, r00x, r00y;  // start positions for closed loop case
+    // init to suppress false (?) maybe-uninitialized warnings for release builds
+    float lx = 0, ly = 0, rx = 0, ry = 0;  // current position of left and right paths
+    float d01x = 0, d01y = 0, n01x = 0, n01y = 0;  // d01 is p0 -> p1 vector; n01 is the normal to d01
+    float l00x = 0, l00y = 0, r00x = 0, r00y = 0;  // start positions for closed loop case
 
     if(path->count == 0)  // single move-to case
       continue;
