@@ -871,7 +871,7 @@ static SWNVGtexture* swnvg__findTexture(SWNVGcontext* gl, int id)
 static int swnvg__renderCreate(void* uptr)
 {
   static int staticInited = 0;
-#if !defined(NDEBUG) || !defined(NVGSW_QUIET_FRAME)
+#ifndef NVGSW_QUIET_FRAME
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
   NVG_LOG("nvg2: software renderer%s\n", gl->flags & NVGSW_PATHS_XC ? " (XC)" : "");
 #endif
@@ -1492,11 +1492,12 @@ static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
   call = swnvg__allocCall(gl);
   if (call == NULL) return;
 
-  // we have to round instead of floor/ceil so small numerical errors in bounds don't turn into whole pixels
-  call->bounds[0] = swnvg__clampi((int)(bounds[0]+0.5f), 0, gl->width-1);
-  call->bounds[1] = swnvg__clampi((int)(bounds[1]+0.5f), 0, gl->height-1);
-  call->bounds[2] = swnvg__clampi((int)(bounds[2]+0.5f), 0, gl->width-1);
-  call->bounds[3] = swnvg__clampi((int)(bounds[3]+0.5f), 0, gl->height-1);
+  // using floor/ceil can cause small numerical errors in bounds to turn into whole pixels ... but rounding
+  //  can cause geometry to be incorrectly clipped (see usvgtest)
+  call->bounds[0] = swnvg__clampi((int)bounds[0], 0, gl->width-1);
+  call->bounds[1] = swnvg__clampi((int)bounds[1], 0, gl->height-1);
+  call->bounds[2] = swnvg__clampi((int)(ceilf(bounds[2])), 0, gl->width-1);
+  call->bounds[3] = swnvg__clampi((int)(ceilf(bounds[3])), 0, gl->height-1);
   // note that bounds are inclusive (hence > instead of >=)
   if (call->bounds[0] > call->bounds[2] || call->bounds[1] > call->bounds[3]) {
     --gl->ncalls;
