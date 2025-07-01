@@ -1445,7 +1445,10 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
       case 0x0085:	// NEL
         type = FONS_NEWLINE;
         break;
-      case 45:    // breakable and printable chars
+      // breakable and printable chars
+      case 45:  // '-'
+      case 47:  // '/'
+      case 0x2013:  // endash
         type = FONS_DASH;
         break;
       default:
