@@ -1414,6 +1414,7 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
   int type = FONS_SPACE, ptype = FONS_SPACE;
   unsigned int pcodepoint = 0;
   int rowChars = 0;
+  int wordStartChars = 0;
   int maxChars = 0x7fffffff;
 
   if (maxRows == 0) return 0;
@@ -1524,6 +1525,7 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
           wordStart = iter.str;
           wordStartX = iter.x;
           wordMinX = q.x0;
+          wordStartChars = rowChars;
         }
 
         // track last non-white space character
@@ -1548,6 +1550,7 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
               wordStart = iter.str;
               wordStartX = iter.x;
               wordMinX = q.x0;
+              rowChars = 0;
               // reset Y
               rowMinY = wordMinY = q.y0;
               rowMaxY = wordMaxY = q.y1;
@@ -1566,6 +1569,7 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
               rowStartX = wordStartX;
               rowStart = wordStart;
               rowMinX = wordMinX - rowStartX;
+              rowChars -= wordStartChars;
               // current word will be on next row, so don't touch wordMin/MaxY
               rowMinY = wordMinY;
               rowMaxY = wordMaxY;
@@ -1575,7 +1579,6 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
             breakEnd = rowStart;
             breakWidth = 0.0;
             breakMaxX = 0.0;
-            rowChars = 0;
           }
           rowEnd = iter.next;
           rowWidth = iter.nextx - rowStartX;
