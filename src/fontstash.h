@@ -170,6 +170,8 @@ int fonsValidateTexture(FONScontext* s, int* dirty);
 
 #ifdef FONTSTASH_IMPLEMENTATION
 
+#include <stdio.h>  // font file loading
+
 #define FONS_NOTUSED(v)  (void)sizeof(v)
 
 #ifndef FONS_SCRATCH_BUF_SIZE
@@ -1520,6 +1522,28 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
         float nextWidth = iter.nextx - rowStartX;
         ++rowChars;
 
+        if (type == FONS_CHAR || type == FONS_CJK_CHAR || type == FONS_DASH) {
+          rowEnd = iter.next;
+          rowWidth = iter.nextx - rowStartX;
+          rowMaxX = q.x1 - rowStartX;
+          // add char vert bounds
+          wordMinY = fons__minf(wordMinY, q.y0);
+          wordMaxY = fons__maxf(wordMaxY, q.y1);
+        }
+
+        // track last end of a word
+        if (((ptype == FONS_CHAR || ptype == FONS_CJK_CHAR) && type == FONS_SPACE)
+            || type == FONS_CJK_CHAR || ptype == FONS_DASH) {
+          breakEnd = iter.str;
+          breakWidth = rowWidth;
+          breakMaxX = rowMaxX;
+          // word will be on current line
+          rowMinY = fons__minf(rowMinY, wordMinY);
+          rowMaxY = fons__maxf(rowMaxY, wordMaxY);
+          wordMinY = 1e6;
+          wordMaxY = -1e6;
+        }
+
         // track last beginning of a word
         if (((ptype == FONS_SPACE || ptype == FONS_DASH) && type == FONS_CHAR) || type == FONS_CJK_CHAR) {
           wordStart = iter.str;
@@ -1580,25 +1604,6 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
             breakWidth = 0.0;
             breakMaxX = 0.0;
           }
-          rowEnd = iter.next;
-          rowWidth = iter.nextx - rowStartX;
-          rowMaxX = q.x1 - rowStartX;
-          // add char vert bounds
-          wordMinY = fons__minf(wordMinY, q.y0);
-          wordMaxY = fons__maxf(wordMaxY, q.y1);
-        }
-
-        // track last end of a word
-        if (((ptype == FONS_CHAR || ptype == FONS_CJK_CHAR) && type == FONS_SPACE)
-            || type == FONS_CJK_CHAR || ptype == FONS_DASH) {
-          breakEnd = iter.str;
-          breakWidth = rowWidth;
-          breakMaxX = rowMaxX;
-          // word will be on current line
-          rowMinY = fons__minf(rowMinY, wordMinY);
-          rowMaxY = fons__maxf(rowMaxY, wordMaxY);
-          wordMinY = 1e6;
-          wordMaxY = -1e6;
         }
       }
     }
@@ -1622,3 +1627,101 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
 }
 
 #endif  // FONTSTASH_IMPLEMENTATION
+
+// g++ -x c++ -march=native -O2 -DFONTSTASH_TEST -DFONTSTASH_IMPLEMENTATION -I stb -o fonstest ../src/fontstash.h
+#ifdef FONTSTASH_TEST
+#include <string>
+#include <random>
+#include <locale>         // std::wstring_convert
+#include <codecvt>        // std::codecvt_utf8
+
+inline bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+
+// note these are not thread-safe because wstring_convert is static; try thread_local!
+static std::string utf32_to_utf8(const std::u32string& str32)
+{
+  static std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> cv;
+  return cv.to_bytes(str32);
+}
+
+static std::u32string utf8_to_utf32(const char* str8)
+{
+  static std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> cv;
+  return cv.from_bytes(str8);
+}
+
+static std::mt19937 randGen;
+unsigned int randpp() { return randGen(); }
+
+//static std::string defaultRandomChars = "0123456789" "ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz";
+static std::string randomStr(const unsigned int len, const std::u32string& charset)
+{
+  std::u32string s(len, 0);
+  for(unsigned int ii = 0; ii < len; ++ii)
+    s[ii] = charset[randpp() % (charset.size() - 1)];
+  return utf32_to_utf8(s);
+}
+
+int main(int argc, char* argv[])
+{
+  //std::u32string charset = utf8_to_utf32("\n\t      abcdefghijklmnopqrstuvwxyz-/新北大都會公園\u2013");
+  std::u32string charset = utf8_to_utf32("\n\t      abcdefghijklmnopqrstuvwxyz-/");
+
+  FONSparams fonsParams = {0};
+  //fonsParams.sdfPadding = 4;
+  //fonsParams.sdfPixelDist = 32;
+  fonsParams.flags = FONS_ZERO_TOPLEFT;  //| FONS_DELAY_LOAD | FONS_SUMMED;
+  fonsParams.atlasBlockHeight = 0;
+  FONScontext* fons = fonsCreateInternal(&fonsParams);
+  const char* sanspath = argc > 1 ? argv[1] : "fonts/Roboto-Regular.ttf";
+  int sans = fonsAddFont(fons, "sans", sanspath);
+  if(sans < 0) { printf("Unable to load font %s\n", sanspath); return -1; }
+
+  FONSstate state;
+  fonsInitState(fons, &state);
+  fonsSetFont(&state, sans);
+  fonsSetSize(&state, 12);
+
+  int rowWidth = 15;
+
+  FONStextRow rows[100];
+  while(true) {
+    std::string wrapped;
+    std::string str = randomStr(rowWidth + (randpp() % (4*rowWidth)) - 1, charset);
+/*
+    std::string str = R"(uboxdjk
+vn	 spget-qaw e
+ aqwgbxid nq fkr-nh   nw
+ flsye)";
+*/
+    const char* start = str.c_str();
+    const char* end = start + str.size();
+
+    size_t nrows = fonsBreakLines(&state, start, end, -rowWidth, rows, 100);
+    const char* curr = start;
+    bool ok = true;
+    for(size_t ii = 0; ii < nrows; ++ii) {
+      auto& row = rows[ii];
+      unsigned int utf8state = 0, codepoint = 0, ncodepts = 0;
+      for (const char* s = row.start; s < row.end; ++s) {
+        if (fons__decutf8(&utf8state, &codepoint, *(const unsigned char*)s))
+          continue;
+        ++ncodepts;
+      }
+      //if(ncodepts > rowWidth) { printf("ERROR: row %d excess width %d for: %s\n", ii, ncodepts, start); }
+      //if(/*isSpace(row.start[0]) ||*/ isSpace(row.end[-1])) { printf("ERROR: row %d not trimmed for: %s\n", ii, start); }
+
+      for(; ok && curr < row.start; ++curr) { if(!isSpace(*curr)) { ok = false; } }
+      curr = row.end;
+      wrapped.append(row.start, row.end).append("\n");
+    }
+    for(; ok && curr < end; ++curr) { if(!isSpace(*curr)) { ok = false; } }
+
+    if(!ok) {
+      printf("ORIGINAL:\n'%s'\nWRAPPED:\n'%s'\n", start, wrapped.c_str());
+    }
+  }
+
+  return 0;
+}
+#endif
