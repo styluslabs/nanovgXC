@@ -1513,7 +1513,7 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
           breakEnd = rowStart;
           breakWidth = 0.0;
           breakMaxX = 0.0;
-          rowChars = 0;
+          rowChars = 1;
           // add char vert bounds
           wordMinY = q.y0;
           wordMaxY = q.y1;
@@ -1522,6 +1522,7 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
         float nextWidth = iter.nextx - rowStartX;
         ++rowChars;
 
+        // track last non-white space character
         if (type == FONS_CHAR || type == FONS_CJK_CHAR || type == FONS_DASH) {
           rowEnd = iter.next;
           rowWidth = iter.nextx - rowStartX;
@@ -1533,7 +1534,7 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
 
         // track last end of a word
         if (((ptype == FONS_CHAR || ptype == FONS_CJK_CHAR) && type == FONS_SPACE)
-            || type == FONS_CJK_CHAR || ptype == FONS_DASH) {
+            || (type == FONS_CJK_CHAR && ptype != FONS_SPACE) || ptype == FONS_DASH) {
           breakEnd = iter.str;
           breakWidth = rowWidth;
           breakMaxX = rowMaxX;
@@ -1552,58 +1553,56 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
           wordStartChars = rowChars;
         }
 
-        // track last non-white space character
-        if (type == FONS_CHAR || type == FONS_CJK_CHAR || type == FONS_DASH) {
-          // Break to new line when a character is beyond break width.
-          if (nextWidth > breakRowWidth || rowChars > maxChars) {
-            if (breakEnd == rowStart) {
-              // The current word is longer than the row length, just break it from here.
-              rows[nrows].start = rowStart;
-              rows[nrows].end = iter.str;
-              rows[nrows].width = rowWidth;
-              rows[nrows].minx = rowMinX;
-              rows[nrows].maxx = rowMaxX;
-              rows[nrows].next = iter.str;
-              rows[nrows].miny = wordMinY;
-              rows[nrows].maxy = wordMaxY;
-              if (++nrows >= maxRows)
-                return nrows;
-              rowStartX = iter.x;
-              rowStart = iter.str;
-              rowMinX = q.x0 - rowStartX;
-              wordStart = iter.str;
-              wordStartX = iter.x;
-              wordMinX = q.x0;
-              rowChars = 0;
-              // reset Y
-              rowMinY = wordMinY = q.y0;
-              rowMaxY = wordMaxY = q.y1;
-            } else {
-              // Break the line from the end of the last word, and start new line from the beginning of the new.
-              rows[nrows].start = rowStart;
-              rows[nrows].end = breakEnd;
-              rows[nrows].width = breakWidth;
-              rows[nrows].minx = rowMinX;
-              rows[nrows].maxx = breakMaxX;
-              rows[nrows].next = wordStart;
-              rows[nrows].miny = rowMinY;
-              rows[nrows].maxy = rowMaxY;
-              if (++nrows >= maxRows)
-                return nrows;
-              rowStartX = wordStartX;
-              rowStart = wordStart;
-              rowMinX = wordMinX - rowStartX;
-              rowChars -= wordStartChars;
-              // current word will be on next row, so don't touch wordMin/MaxY
-              rowMinY = wordMinY;
-              rowMaxY = wordMaxY;
-              // No change to the word start
-            }
-            // Set null break point
-            breakEnd = rowStart;
-            breakWidth = 0.0;
-            breakMaxX = 0.0;
+        // Break to new line when a character is beyond break width.
+        if ((type == FONS_CHAR || type == FONS_CJK_CHAR || type == FONS_DASH)
+            && (nextWidth > breakRowWidth || rowChars > maxChars)) {
+          if (breakEnd == rowStart) {
+            // The current word is longer than the row length, just break it from here.
+            rows[nrows].start = rowStart;
+            rows[nrows].end = iter.str;
+            rows[nrows].width = rowWidth;
+            rows[nrows].minx = rowMinX;
+            rows[nrows].maxx = rowMaxX;
+            rows[nrows].next = iter.str;
+            rows[nrows].miny = wordMinY;
+            rows[nrows].maxy = wordMaxY;
+            if (++nrows >= maxRows)
+              return nrows;
+            rowStartX = iter.x;
+            rowStart = iter.str;
+            rowMinX = q.x0 - rowStartX;
+            wordStart = iter.str;
+            wordStartX = iter.x;
+            wordMinX = q.x0;
+            rowChars = 0;
+            // reset Y
+            rowMinY = wordMinY = q.y0;
+            rowMaxY = wordMaxY = q.y1;
+          } else {
+            // Break the line from the end of the last word, and start new line from the beginning of the new.
+            rows[nrows].start = rowStart;
+            rows[nrows].end = breakEnd;
+            rows[nrows].width = breakWidth;
+            rows[nrows].minx = rowMinX;
+            rows[nrows].maxx = breakMaxX;
+            rows[nrows].next = wordStart;
+            rows[nrows].miny = rowMinY;
+            rows[nrows].maxy = rowMaxY;
+            if (++nrows >= maxRows)
+              return nrows;
+            rowStartX = wordStartX;
+            rowStart = wordStart;
+            rowMinX = wordMinX - rowStartX;
+            rowChars -= wordStartChars;
+            // current word will be on next row, so don't touch wordMin/MaxY
+            rowMinY = wordMinY;
+            rowMaxY = wordMaxY;
+            // No change to the word start
           }
+          // Set null break point
+          breakEnd = rowStart;
+          breakWidth = 0.0;
+          breakMaxX = 0.0;
         }
       }
     }
@@ -1628,7 +1627,7 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
 
 #endif  // FONTSTASH_IMPLEMENTATION
 
-// g++ -x c++ -march=native -O2 -DFONTSTASH_TEST -DFONTSTASH_IMPLEMENTATION -I stb -o fonstest ../src/fontstash.h
+// g++ -x c++ -DFONTSTASH_TEST -DFONTSTASH_IMPLEMENTATION -I stb -o fonstest ../src/fontstash.h
 #ifdef FONTSTASH_TEST
 #include <string>
 #include <random>
@@ -1664,8 +1663,8 @@ static std::string randomStr(const unsigned int len, const std::u32string& chars
 
 int main(int argc, char* argv[])
 {
-  //std::u32string charset = utf8_to_utf32("\n\t      abcdefghijklmnopqrstuvwxyz-/新北大都會公園\u2013");
-  std::u32string charset = utf8_to_utf32("\n\t      abcdefghijklmnopqrstuvwxyz-/");
+  std::u32string charset = utf8_to_utf32("\n\t      abcdefghijklmnopqrstuvwxyz-/新北大都會公園\u2013");
+  //std::u32string charset = utf8_to_utf32("\n\t      abcdefghijklmnopqrstuvwxyz-/");
 
   FONSparams fonsParams = {0};
   //fonsParams.sdfPadding = 4;
@@ -1687,13 +1686,8 @@ int main(int argc, char* argv[])
   FONStextRow rows[100];
   while(true) {
     std::string wrapped;
-    std::string str = randomStr(rowWidth + (randpp() % (4*rowWidth)) - 1, charset);
-/*
-    std::string str = R"(uboxdjk
-vn	 spget-qaw e
- aqwgbxid nq fkr-nh   nw
- flsye)";
-*/
+    //std::string str = randomStr(rowWidth + (randpp() % (4*rowWidth)) - 1, charset);
+    std::string str = "l新 c-zqb-wtzkeg	園i cnsb會n-jy	";
     const char* start = str.c_str();
     const char* end = start + str.size();
 
@@ -1708,14 +1702,18 @@ vn	 spget-qaw e
           continue;
         ++ncodepts;
       }
-      //if(ncodepts > rowWidth) { printf("ERROR: row %d excess width %d for: %s\n", ii, ncodepts, start); }
-      //if(/*isSpace(row.start[0]) ||*/ isSpace(row.end[-1])) { printf("ERROR: row %d not trimmed for: %s\n", ii, start); }
+      if(ncodepts > rowWidth) { printf("ERROR: row %d excess width %d\n", ii, ncodepts); ok = false;}
+      if((ii > 0 && isSpace(row.start[0])) || isSpace(row.end[-1])) { printf("ERROR: row %d not trimmed for: %s\n", ii, start); }
 
-      for(; ok && curr < row.start; ++curr) { if(!isSpace(*curr)) { ok = false; } }
+      for(; ok && curr < row.start; ++curr) {
+        if(!isSpace(*curr)) { printf("ERROR: row %d missing character(s)\n", ii); ok = false; }
+      }
       curr = row.end;
       wrapped.append(row.start, row.end).append("\n");
     }
-    for(; ok && curr < end; ++curr) { if(!isSpace(*curr)) { ok = false; } }
+    for(; ok && curr < end; ++curr) {
+      if(!isSpace(*curr)) { printf("ERROR: last row missing character(s)\n"); ok = false; }
+    }
 
     if(!ok) {
       printf("ORIGINAL:\n'%s'\nWRAPPED:\n'%s'\n", start, wrapped.c_str());
