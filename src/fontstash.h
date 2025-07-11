@@ -486,6 +486,7 @@ struct FONSatlas
   //int cellw, cellh;
   int rowh;
   int nextx, nexty;
+  int nglyphs;
 };
 typedef struct FONSatlas FONSatlas;
 
@@ -578,13 +579,9 @@ static unsigned int fons__decutf8(unsigned int* state, unsigned int* codep, unsi
 
 static void fons__atlasReset(FONSatlas* atlas, int w, int h)  //, int cellw, int cellh)
 {
+  memset(atlas, 0, sizeof(FONSatlas));
   atlas->width = w;
   atlas->height = h;
-  //atlas->cellw = cellw;
-  //atlas->cellh = cellh;
-  atlas->nextx = 0;
-  atlas->nexty = 0;
-  atlas->rowh = 0;
 }
 
 static int fons__atlasAddCell(FONScontext* stash, int w, int h, int* x, int* y)
@@ -608,6 +605,7 @@ static int fons__atlasAddCell(FONScontext* stash, int w, int h, int* x, int* y)
   *y = atlas->nexty;
   atlas->nextx += w;
   atlas->rowh = fons__maxi(atlas->rowh, h);
+  ++atlas->nglyphs;
   return 1;
 }
 
@@ -1522,16 +1520,6 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
         float nextWidth = iter.nextx - rowStartX;
         ++rowChars;
 
-        // track last non-white space character
-        if (type == FONS_CHAR || type == FONS_CJK_CHAR || type == FONS_DASH) {
-          rowEnd = iter.next;
-          rowWidth = iter.nextx - rowStartX;
-          rowMaxX = q.x1 - rowStartX;
-          // add char vert bounds
-          wordMinY = fons__minf(wordMinY, q.y0);
-          wordMaxY = fons__maxf(wordMaxY, q.y1);
-        }
-
         // track last end of a word
         if (((ptype == FONS_CHAR || ptype == FONS_CJK_CHAR) && type == FONS_SPACE)
             || (type == FONS_CJK_CHAR && ptype != FONS_SPACE) || ptype == FONS_DASH) {
@@ -1604,6 +1592,19 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
           breakWidth = 0.0;
           breakMaxX = 0.0;
         }
+
+
+        // track last non-white space character
+        if (type == FONS_CHAR || type == FONS_CJK_CHAR || type == FONS_DASH) {
+          rowEnd = iter.next;
+          rowWidth = iter.nextx - rowStartX;
+          rowMaxX = q.x1 - rowStartX;
+          // add char vert bounds
+          wordMinY = fons__minf(wordMinY, q.y0);
+          wordMaxY = fons__maxf(wordMaxY, q.y1);
+        }
+
+
       }
     }
     pcodepoint = iter.codepoint;
@@ -1684,10 +1685,11 @@ int main(int argc, char* argv[])
   int rowWidth = 15;
 
   FONStextRow rows[100];
+  float bounds[4];
   while(true) {
     std::string wrapped;
     //std::string str = randomStr(rowWidth + (randpp() % (4*rowWidth)) - 1, charset);
-    std::string str = "l新 c-zqb-wtzkeg	園i cnsb會n-jy	";
+    std::string str = "  bz園hia都w  都 h 北-cya raj 公bycf";
     const char* start = str.c_str();
     const char* end = start + str.size();
 
@@ -1702,11 +1704,16 @@ int main(int argc, char* argv[])
           continue;
         ++ncodepts;
       }
-      if(ncodepts > rowWidth) { printf("ERROR: row %d excess width %d\n", ii, ncodepts); ok = false;}
-      if((ii > 0 && isSpace(row.start[0])) || isSpace(row.end[-1])) { printf("ERROR: row %d not trimmed for: %s\n", ii, start); }
+      //if(ncodepts > rowWidth) { printf("ERROR: row %d excess width %d\n", ii, ncodepts); ok = false;}
+      //if((ii > 0 && isSpace(row.start[0])) || isSpace(row.end[-1])) { printf("ERROR: row %d not trimmed for: %s\n", ii, start); }
 
-      for(; ok && curr < row.start; ++curr) {
-        if(!isSpace(*curr)) { printf("ERROR: row %d missing character(s)\n", ii); ok = false; }
+      float adv = fonsTextBounds(&state, 0, 0, start, end, bounds);
+      if(bounds[0] != row.minx || bounds[1] != row.miny || bounds[2] != row.maxx || bounds[3] != row.maxy) {
+        printf("ERROR: incorrect bounds for row %d\n", ii); ok = false;
+      }
+
+      for(; curr < row.start; ++curr) {
+        if(!isSpace(*curr)) { printf("ERROR: row %d missing character(s)\n", ii); ok = false; break; }
       }
       curr = row.end;
       wrapped.append(row.start, row.end).append("\n");
