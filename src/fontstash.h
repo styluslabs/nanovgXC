@@ -1662,6 +1662,8 @@ static std::string randomStr(const unsigned int len, const std::u32string& chars
   return utf32_to_utf8(s);
 }
 
+static bool epsEq(float a, float b, float eps = 0.01) { return std::abs(a - b) < eps; }
+
 int main(int argc, char* argv[])
 {
   std::u32string charset = utf8_to_utf32("\n\t      abcdefghijklmnopqrstuvwxyz-/新北大都會公園\u2013");
@@ -1688,8 +1690,8 @@ int main(int argc, char* argv[])
   float bounds[4];
   while(true) {
     std::string wrapped;
-    //std::string str = randomStr(rowWidth + (randpp() % (4*rowWidth)) - 1, charset);
-    std::string str = "  bz園hia都w  都 h 北-cya raj 公bycf";
+    std::string str = randomStr(rowWidth + (randpp() % (4*rowWidth)) - 1, charset);
+    //std::string str = "ntf c新z北-s i北 園np \n新qlo zz z z te\tlqebq北會yinnnijvt";
     const char* start = str.c_str();
     const char* end = start + str.size();
 
@@ -1707,8 +1709,9 @@ int main(int argc, char* argv[])
       //if(ncodepts > rowWidth) { printf("ERROR: row %d excess width %d\n", ii, ncodepts); ok = false;}
       //if((ii > 0 && isSpace(row.start[0])) || isSpace(row.end[-1])) { printf("ERROR: row %d not trimmed for: %s\n", ii, start); }
 
-      float adv = fonsTextBounds(&state, 0, 0, start, end, bounds);
-      if(bounds[0] != row.minx || bounds[1] != row.miny || bounds[2] != row.maxx || bounds[3] != row.maxy) {
+      float adv = fonsTextBounds(&state, 0, 0, row.start, row.end, bounds);
+      if(!epsEq(bounds[0], row.minx) || !epsEq(bounds[1], row.miny)
+          || !epsEq(bounds[2], row.maxx) || !epsEq(bounds[3], row.maxy)) {
         printf("ERROR: incorrect bounds for row %d\n", ii); ok = false;
       }
 
@@ -1722,9 +1725,8 @@ int main(int argc, char* argv[])
       if(!isSpace(*curr)) { printf("ERROR: last row missing character(s)\n"); ok = false; }
     }
 
-    if(!ok) {
-      printf("ORIGINAL:\n'%s'\nWRAPPED:\n'%s'\n", start, wrapped.c_str());
-    }
+    if(!ok) { printf("ORIGINAL:\n'%s'\nWRAPPED:\n'%s'\n", start, wrapped.c_str()); }
+    else { printf("OK\n"); }
   }
 
   return 0;
