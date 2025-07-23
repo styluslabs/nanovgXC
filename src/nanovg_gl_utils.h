@@ -32,8 +32,12 @@ void nvgluSetViewport(int x, int y, int w, int h);
 void nvgluSetScissor(int x, int y, int w, int h);
 void nvgluClear(NVGcolor color);
 
+#define NVGLU_SAMPLES_SHIFT 26
+
 enum NVGimageFlagsGLU {
   NVGLU_NO_NVG_IMAGE = 1<<24,	// do not create a nanovg image for the texture
+  NVGLU_FB_DEPTH = 1<<25,
+  NVGLU_SAMPLES = 0x0F<<NVGLU_SAMPLES_SHIFT,
 };
 
 #endif // NANOVG_GL_UTILS_H
@@ -43,28 +47,25 @@ enum NVGimageFlagsGLU {
 struct NVGLUframebuffer {
   NVGcontext* ctx;
   GLuint fbo;
-  //GLuint rbo;
-  GLuint texture;
+  GLuint texture, rbcolor, rbdepth;
   int image;
   int width;
   int height;
 };
 
-// we'll assume FBO functionality is available (as nanovg-2 doesn't work without it)
+// we'll assume FBO functionality is available (as nanovgXC doesn't work without it)
 
-static const GLenum drawBuffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+//static const GLenum drawBuffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
 
 NVGLUframebuffer* nvgluCreateFramebuffer(NVGcontext* ctx, int w, int h, int imageFlags)
 {
   GLint defaultFBO;
-  //GLint defaultRBO;
   NVGLUframebuffer* fb = NULL;
 
   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &defaultFBO);
-  //glGetIntegerv(GL_RENDERBUFFER_BINDING, &defaultRBO);
 
   fb = (NVGLUframebuffer*)malloc(sizeof(NVGLUframebuffer));
-  if (fb == NULL) return NULL;
+  if (!fb) return NULL;
   memset(fb, 0, sizeof(NVGLUframebuffer));
   fb->ctx = ctx;
   // frame buffer object
@@ -118,25 +119,53 @@ void nvgluSetFramebufferSRGB(int enable)
 // assumes nvgluBindFramebuffer() has already been called on fb
 void nvgluSetFramebufferSize(NVGLUframebuffer* fb, int w, int h, int imageFlags)
 {
-  GLint internalfmt = imageFlags & NVG_IMAGE_SRGB ? GL_SRGB8_ALPHA8 : GL_RGBA8;
-  if(w <= 0 || h <= 0 || (w == fb->width && h == fb->height))
+  if (w <= 0 || h <= 0 || (w == fb->width && h == fb->height))
     return;
-  if(fb->image >= 0) {
+  if (fb->image >= 0) {
     NVG_LOG("nvgluSetFramebufferSize() can only be used with framebuffer created with NVGLU_NO_NVG_IMAGE.");
     return;
   }
+  if (fb->texture > 0) { glDeleteTextures(1, &fb->texture); fb->texture = 0; }
+  if (fb->rbcolor > 0) { glDeleteRenderbuffers(1, &fb->rbcolor); fb->rbcolor = 0; }
+  if (fb->rbdepth > 0) { glDeleteRenderbuffers(1, &fb->rbdepth); fb->rbdepth = 0; }
 
-  glDeleteTextures(1, &fb->texture);
-  glGenTextures(1, &fb->texture);
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, fb->texture);
-  glTexImage2D(GL_TEXTURE_2D, 0, internalfmt, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-  //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glBindTexture(GL_TEXTURE_2D, 0);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb->texture, 0);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+  GLint internalfmt = (imageFlags & NVG_IMAGE_SRGB) ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+  int samples = (imageFlags & NVGLU_SAMPLES) >> NVGLU_SAMPLES_SHIFT;
+  if (samples > 1 || (imageFlags & NVGLU_FB_DEPTH)) {
+    glGenRenderbuffers(1, &fb->rbcolor);
+    glBindRenderbuffer(GL_RENDERBUFFER, fb->rbcolor);
+    if (samples > 1)
+      glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, internalfmt, w, h);
+    else
+      glRenderbufferStorage(GL_RENDERBUFFER, internalfmt, w, h);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, fb->rbcolor);
+
+    if(imageFlags & NVGLU_FB_DEPTH) {
+      glGenRenderbuffers(1, &fb->rbdepth);
+      glBindRenderbuffer(GL_RENDERBUFFER, fb->rbdepth);
+      if (samples > 1)
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8, w, h);
+      else
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fb->rbdepth);
+    }
+    else
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
+
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+  }
+  else {
+    glGenTextures(1, &fb->texture);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, fb->texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, internalfmt, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb->texture, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+  }
   fb->width = w;
   fb->height = h;
 }
@@ -168,7 +197,7 @@ void nvgluSetViewport(int x, int y, int w, int h)
 
 void nvgluSetScissor(int x, int y, int w, int h)
 {
-  if(w <= 0 || h <= 0)
+  if (w <= 0 || h <= 0)
     glDisable(GL_SCISSOR_TEST);
   else {
     glEnable(GL_SCISSOR_TEST);
@@ -194,16 +223,13 @@ unsigned int nvgluGetTexture(NVGLUframebuffer* fb)
 
 void nvgluDeleteFramebuffer(NVGLUframebuffer* fb)
 {
-  if (fb == NULL) return;
-  if (fb->fbo != 0)
-    glDeleteFramebuffers(1, &fb->fbo);
-  if (fb->image >= 0)
-    nvgDeleteImage(fb->ctx, fb->image);
-  else
-    glDeleteTextures(1, &fb->texture);
-  fb->ctx = NULL;
-  fb->fbo = 0;
-  fb->texture = 0;
+  if (!fb) { return; }
+  if (fb->fbo > 0) { glDeleteFramebuffers(1, &fb->fbo); }
+  if (fb->image >= 0) { nvgDeleteImage(fb->ctx, fb->image); }
+  if (fb->texture > 0) { glDeleteTextures(1, &fb->texture); }
+  if (fb->rbcolor > 0) { glDeleteRenderbuffers(1, &fb->rbcolor); }
+  if (fb->rbdepth > 0) { glDeleteRenderbuffers(1, &fb->rbdepth); }
+  memset(fb, 0, sizeof(NVGLUframebuffer));
   fb->image = -1;
   free(fb);
 }
