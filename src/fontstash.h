@@ -770,17 +770,22 @@ error:
   return NULL;
 }
 
+static void fons__readFont(FONSfont* font)
+{
+  unsigned char* fontdata = fons__readFile((const char*)font->data, &font->dataSize);
+  if (font->freeData)
+    free(font->data);
+  font->data = fontdata;
+  font->freeData = 1;
+}
+
 static int fons__loadFont(FONScontext* stash, int idx)
 {
   int i, ascent, descent, fh, lineGap;
   FONSfont* font = stash->fonts[idx];
-  // dataSize == 0 indicates data contains path to font file
-  if (font->dataSize == 0) {
-    unsigned char* fontdata = fons__readFile((const char*)font->data, &font->dataSize);
-    if (font->freeData)
-      free(font->data);
-    font->data = fontdata;
-    font->freeData = 1;
+  if (font->glyphs) {
+    // font already loaded
+    return idx;
   }
 
   if (!font->data || !fons__tt_loadFont(stash, &font->font, font->data, font->dataSize)) goto error;
@@ -821,7 +826,12 @@ int fonsAddFontMem(FONScontext* stash, const char* name, unsigned char* data, in
   font->dataSize = dataSize;
   font->data = data;
   font->freeData = (unsigned char)freeData;
-  return (stash->params.flags & FONS_DELAY_LOAD) ? idx : fons__loadFont(stash, idx);
+  if (stash->params.flags & FONS_DELAY_LOAD) {
+    return idx;
+  } else {
+    if (font->dataSize == 0) fons__readFont(font);
+    return fons__loadFont(stash, idx);
+  }
 }
 
 int fonsSetFont(FONSstate* state, int font)
@@ -830,12 +840,16 @@ int fonsSetFont(FONSstate* state, int font)
   FONScontext* stash = state->context;
   if (stash == NULL) { return FONS_INVALID; }
   if (font < 0 || font >= stash->nfonts) { font = FONS_INVALID; }
-  else if (stash->fonts[font]->data && !stash->fonts[font]->dataSize) {
+  else if(stash->fonts[font]->data) {
     //if(stash->lockStash) stash->lockStash(stash->lockUptr, FONS_UNLOCK_READ | FONS_LOCK_WRITE);
+    // dataSize == 0 indicates data contains path to font file
+    if (stash->fonts[font]->dataSize == 0)
+      fons__readFont(stash->fonts[font]);
     fons__loadFont(stash, font);
     //if(stash->lockStash) stash->lockStash(stash->lockUptr, FONS_UNLOCK_WRITE | FONS_LOCK_READ);
-    if (!stash->fonts[font]->data) { font = FONS_INVALID; }
   }
+  if(!stash->fonts[font]->data)
+    font = FONS_INVALID;
 
   state->font = font;
   return font;
@@ -902,19 +916,23 @@ static FONSglyph* fons__getGlyph(FONScontext* stash, int fontid, unsigned int co
     // font specific fallbacks
     for (i = 0; g == 0 && i < font->nfallbacks; ++i) {
       renderFontId = font->fallbacks[i];
-      // delayed loading
-      if (stash->fonts[renderFontId]->data && !stash->fonts[renderFontId]->dataSize)
+      if(stash->fonts[renderFontId]->data) {
+        // delayed loading
+        if (stash->fonts[renderFontId]->dataSize == 0)
+          fons__readFont(stash->fonts[renderFontId]);
         fons__loadFont(stash, renderFontId);
-      if (stash->fonts[renderFontId]->data)
         g = fons__tt_getGlyphIndex(&stash->fonts[renderFontId]->font, codepoint);
+      }
     }
     // global fallbacks
     for (i = 0; g == 0 && i < stash->nfallbacks; ++i) {
       renderFontId = stash->fallbacks[i];
-      if (stash->fonts[renderFontId]->data && !stash->fonts[renderFontId]->dataSize)
+      if(stash->fonts[renderFontId]->data) {
+        if (stash->fonts[renderFontId]->dataSize == 0)
+          fons__readFont(stash->fonts[renderFontId]);
         fons__loadFont(stash, renderFontId);
-      if (stash->fonts[renderFontId]->data)
         g = fons__tt_getGlyphIndex(&stash->fonts[renderFontId]->font, codepoint);
+      }
     }
   } else {
     g = glyph->index;
