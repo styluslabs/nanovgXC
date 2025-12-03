@@ -457,7 +457,7 @@ static unsigned int swnvg__mix8(float fx, float fy, int t00, int t10, int t01, i
   return (unsigned int)(0.5f + t0 + fy*(t1 - t0));
 }
 
-static void swnvg__lerpAndBlend(unsigned char* dst, unsigned char cover, SWNVGtexture* tex, float ijx, float ijy, int linear)
+static void swnvg__lerpAndBlend(unsigned char* dst, unsigned char cover, SWNVGtexture* tex, float ijx, float ijy, int linear, int a)
 {
   ijx = swnvg__maxf(0.0f, ijx);  ijy = swnvg__maxf(0.0f, ijy);
   int ij00x = swnvg__mini((int)ijx, tex->width-1), ij00y = swnvg__mini((int)ijy, tex->height-1);
@@ -472,7 +472,7 @@ static void swnvg__lerpAndBlend(unsigned char* dst, unsigned char cover, SWNVGte
   int c1 = swnvg__mix8(fx, fy, COLOR1(t00), COLOR1(t10), COLOR1(t01), COLOR1(t11));
   int c2 = swnvg__mix8(fx, fy, COLOR2(t00), COLOR2(t10), COLOR2(t01), COLOR2(t11));
   int c3 = swnvg__mix8(fx, fy, COLOR3(t00), COLOR3(t10), COLOR3(t01), COLOR3(t11));
-  swnvg__blend8888(dst, cover, c0, c1, c2, c3, linear);
+  swnvg__blend8888(dst, cover, c0, c1, c2, (a*c3)/255, linear);
 }
 
 static int swnvg__getBlendFactor(int factor, int srca, int dsta)
@@ -554,13 +554,13 @@ static void swnvg__scanlineSolid(unsigned char* dst, int count, unsigned char* c
         int imgx = swnvg__clampi((int)(0.5f + qx), 0, call->tex->width-1);
         int imgy = swnvg__clampi((int)(0.5f + qy), 0, call->tex->height-1);
         rgba32_t c = img[imgy*call->tex->width + imgx];
-        if(RGBA32_IS_OPAQUE(c))
+        if(RGBA32_IS_OPAQUE(c) && RGBA32_IS_OPAQUE(call->innerCol))
           swnvg__blendOpaque(dst, *cover++, c, linear);
         else
-          swnvg__blend(dst, *cover++, COLOR0(c), COLOR1(c), COLOR2(c), COLOR3(c), linear);
+          swnvg__blend(dst, *cover++, COLOR0(c), COLOR1(c), COLOR2(c), COLOR3(c)*COLOR3(call->innerCol)/255, linear);
       }
       else
-        swnvg__lerpAndBlend(dst, *cover++, call->tex, qx, qy, linear);
+        swnvg__lerpAndBlend(dst, *cover++, call->tex, qx, qy, linear, COLOR3(call->innerCol));
       qx += dqx;  // for qx,qy => qx+1,qy
       qy += dqy;
       dst += 4;
@@ -585,7 +585,7 @@ static void swnvg__scanlineSolid(unsigned char* dst, int count, unsigned char* c
       float d = (d0 + call->feather*0.5f)/call->feather;
       if (call->tex) {
         // texture for gradients with >2 stops
-        swnvg__lerpAndBlend(dst, *cover++, call->tex, d*call->tex->width, 0, linear);
+        swnvg__lerpAndBlend(dst, *cover++, call->tex, d*call->tex->width, 0, linear, 255);
       } else {
         d = swnvg__clampf(d, 0.0f, 1.0f);
         int cr = (int)(0.5f + cr0*(1.0f - d) + cr1*d);
