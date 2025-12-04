@@ -51,10 +51,6 @@
 #endif
 #include "tests.c"
 
-#ifndef NO_THREADING
-#include "threadpool.h"
-#endif
-
 typedef struct { NVGcontext* vg; float* fbuff; int fbuffw, fbuffh; float sdfScale, sdfOffset; } SDFcontext;
 
 static const float INITIAL_SDF_DIST = 1E6f;
@@ -235,11 +231,10 @@ int SDL_main(int argc, char* argv[])
     vg = nvgswCreate(nvgFlags);
 #ifndef NO_THREADING
     if(numThreads == 0)
-      numThreads = numCPUCores();  // * (PLATFORM_MOBILE ? 1 : 2)
+      numThreads = SDL_GetCPUCount();  // * (PLATFORM_MOBILE ? 1 : 2)
     if(numThreads > 1) {
       int xthreads = dispBounds.h > dispBounds.w ? 2 : numThreads/2;  // prefer square-like tiles
-      poolInit(numThreads);
-      nvgswSetThreading(vg, xthreads, numThreads/xthreads, poolSubmit, poolWait);
+      nvgswSetThreading(vg, xthreads, numThreads/xthreads);
     }
 #endif
     if(swRender == 1) {
