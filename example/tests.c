@@ -323,8 +323,7 @@ static void convexFillTest(NVGcontext* vg)
 
 // nanosvg
 #define NANOSVG_IMPLEMENTATION
-//#include "nanosvg.h"
-#include "../../nanosvg/src/nanosvg.h"
+#include "nanosvg.h"
 
 static struct NVGcolor nvgColUint(unsigned int col)
 {
