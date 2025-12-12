@@ -370,7 +370,7 @@ int SDL_main(int argc, char* argv[])
       fbHeight = sdlSurface->h;
       SDL_PixelFormat* fmt = sdlSurface->format;
       nvgswSetFramebuffer(vg, sdlSurface->pixels, fbWidth, fbHeight, fmt->Rshift, fmt->Gshift, fmt->Bshift, 24);
-      SDL_FillRect(sdlSurface, NULL, SDL_MapRGB(sdlSurface->format, 255, 255, 255));
+      SDL_FillRect(sdlSurface, NULL, SDL_MapRGB(sdlSurface->format, 0.3f*255, 0.3f*255, 0.3f*255));
       SDL_LockSurface(sdlSurface);
     } else if (swRender == 2) {
       SDL_GL_GetDrawableSize(sdlWindow, &fbWidth, &fbHeight);
