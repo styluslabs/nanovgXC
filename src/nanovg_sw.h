@@ -550,17 +550,18 @@ static void swnvg__scanlineSolid(unsigned char* dst, int count, unsigned char* c
     qx = (qx + 0.5f)*call->tex->width/call->extent[0] - 0.5f;
     qy = (qy + 0.5f)*call->tex->height/call->extent[1] - 0.5f;
     for (i = 0; i < count; ++i) {
+      int alpha = (*cover++ * COLOR3(call->innerCol))/255;
       if(call->tex->flags & NVG_IMAGE_NEAREST) {
         int imgx = swnvg__clampi((int)(0.5f + qx), 0, call->tex->width-1);
         int imgy = swnvg__clampi((int)(0.5f + qy), 0, call->tex->height-1);
         rgba32_t c = img[imgy*call->tex->width + imgx];
         if(RGBA32_IS_OPAQUE(c))
-          swnvg__blendOpaque(dst, *cover++, c, linear);
+          swnvg__blendOpaque(dst, alpha, c, linear);
         else
-          swnvg__blend(dst, *cover++, COLOR0(c), COLOR1(c), COLOR2(c), COLOR3(c), linear);
+          swnvg__blend(dst, alpha, COLOR0(c), COLOR1(c), COLOR2(c), COLOR3(c), linear);
       }
       else
-        swnvg__lerpAndBlend(dst, *cover++, call->tex, qx, qy, linear);
+        swnvg__lerpAndBlend(dst, alpha, call->tex, qx, qy, linear);
       qx += dqx;  // for qx,qy => qx+1,qy
       qy += dqy;
       dst += 4;

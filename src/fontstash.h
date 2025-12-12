@@ -821,7 +821,7 @@ int fonsAddFontMem(FONScontext* stash, const char* name, unsigned char* data, in
   font->dataSize = dataSize;
   font->data = data;
   font->freeData = (unsigned char)freeData;
-  return (stash->params.flags & FONS_DELAY_LOAD) ? idx : fons__loadFont(stash, idx);
+  return (stash->params.flags & FONS_DELAY_LOAD) && !dataSize ? idx : fons__loadFont(stash, idx);
 }
 
 int fonsSetFont(FONSstate* state, int font)

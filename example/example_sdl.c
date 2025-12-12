@@ -184,27 +184,27 @@ int SDL_main(int argc, char* argv[])
 #ifndef NDEBUG
   nvgFlags |= NVGL_DEBUG;
 #endif
-  for(int argi = 1; argi < argc; ++argi) {
-    if(strcmp(argv[argi], "--flags") == 0 && ++argi < argc)
-      nvgFlags = strtoul(argv[argi], 0, 0);  // support hex
-    else if(strcmp(argv[argi], "--orflags") == 0 && ++argi < argc)
-      nvgFlags |= strtoul(argv[argi], 0, 0);
-    else if(strcmp(argv[argi], "--sdf") == 0 && ++argi < argc)
-      nvgFlags |= atoi(argv[argi]) ? NVG_SDF_TEXT : 0;
-    else if(strcmp(argv[argi], "--srgb") == 0 && ++argi < argc)
-      sRGBaware = atoi(argv[argi]);
-    else if(strcmp(argv[argi], "--fb") == 0 && ++argi < argc)
-      useFramebuffer = atoi(argv[argi]);
-    else if(strcmp(argv[argi], "--sw") == 0 && ++argi < argc)
-      swRender = atoi(argv[argi]);
-    else if(strcmp(argv[argi], "--fps") == 0 && ++argi < argc)
-      contFPS = atoi(argv[argi]);
-    else if(strcmp(argv[argi], "--threads") == 0 && ++argi < argc)
-      numThreads = atoi(argv[argi]);
-    else if(strcmp(argv[argi], "--test") == 0 && ++argi < argc)
-      testSet = atoi(argv[argi]);
-    else if(strcmp(argv[argi], "--svg") == 0 && ++argi < argc) {
-      svgFile = argv[argi];
+  for(int argi = 1; argi < argc-1; argi += 2) {
+    if(strcmp(argv[argi], "--flags") == 0)
+      nvgFlags = strtoul(argv[argi+1], 0, 0);  // support hex
+    else if(strcmp(argv[argi], "--orflags") == 0)
+      nvgFlags |= strtoul(argv[argi+1], 0, 0);
+    else if(strcmp(argv[argi], "--sdf") == 0)
+      nvgFlags |= atoi(argv[argi+1]) ? NVG_SDF_TEXT : 0;
+    else if(strcmp(argv[argi], "--srgb") == 0)
+      sRGBaware = atoi(argv[argi+1]);
+    else if(strcmp(argv[argi], "--fb") == 0)
+      useFramebuffer = atoi(argv[argi+1]);
+    else if(strcmp(argv[argi], "--sw") == 0)
+      swRender = atoi(argv[argi+1]);
+    else if(strcmp(argv[argi], "--fps") == 0)
+      contFPS = atoi(argv[argi+1]);
+    else if(strcmp(argv[argi], "--threads") == 0)
+      numThreads = atoi(argv[argi+1]);
+    else if(strcmp(argv[argi], "--test") == 0)
+      testSet = atoi(argv[argi+1]);
+    else if(strcmp(argv[argi], "--svg") == 0) {
+      svgFile = argv[argi+1];
       testNum = 3;  // if svg file specified, show it immediately
     }
   }
@@ -370,13 +370,13 @@ int SDL_main(int argc, char* argv[])
       fbHeight = sdlSurface->h;
       SDL_PixelFormat* fmt = sdlSurface->format;
       nvgswSetFramebuffer(vg, sdlSurface->pixels, fbWidth, fbHeight, fmt->Rshift, fmt->Gshift, fmt->Bshift, 24);
-      SDL_FillRect(sdlSurface, NULL, SDL_MapRGB(sdlSurface->format, 0.3f*255, 0.3f*255, 0.3f*255));
+      SDL_FillRect(sdlSurface, NULL, SDL_MapRGB(sdlSurface->format, 0.6f*255, 0.6f*255, 0.6f*255));
       SDL_LockSurface(sdlSurface);
     } else if (swRender == 2) {
       SDL_GL_GetDrawableSize(sdlWindow, &fbWidth, &fbHeight);
       if(!swFB || fbWidth != swBlitter->width || fbHeight != swBlitter->height)
         swFB = realloc(swFB, fbWidth*fbHeight*4);
-      memset(swFB, (int)(0.3f*255), fbWidth*fbHeight*4);
+      memset(swFB, (int)(0.6f*255), fbWidth*fbHeight*4);
       nvgswSetFramebuffer(vg, swFB, fbWidth, fbHeight, 0, 8, 16, 24);
     }
 
