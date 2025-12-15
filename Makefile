@@ -2,7 +2,7 @@
 # - generates files in ./Release (default) or ./Debug (with DEBUG=1 passed to make)
 
 TARGET = demo2_sdl
-SOURCES = src/nanovg.c src/thpool.c example/perf.c example/demo.c example/example_sdl.c
+SOURCES = src/nanovg.c example/perf.c example/demo.c example/example_sdl.c
 INC = src example glad
 INCSYS = example/stb
 

@@ -3,9 +3,9 @@
 //   based on nanovg:
 // Copyright (c) 2013 Mikko Mononen memon@inside.org
 //
-#include <stdio.h>
 
 #include "platform.h"
+#include <stdio.h>
 #include <SDL.h>
 #ifdef main
 #undef main
@@ -90,13 +90,13 @@ FONScontext* createFontstash(int nvgFlags, int maxAtlasFontPx)
   params.sdfPadding = 4;
   params.sdfPixelDist = 32.0f;
 
-  SDFcontext* ctx = malloc(sizeof(SDFcontext));
+  SDFcontext* ctx = (SDFcontext*)malloc(sizeof(SDFcontext));
   ctx->fbuffh = ctx->fbuffw = maxAtlasFontPx + 2*params.sdfPadding + 16;
   // we use dist < 0.0f inside glyph; but for scale > 0, stbtt uses >on_edge_value for inside
   ctx->sdfScale = -params.sdfPixelDist;
   ctx->sdfOffset = 127;  // stbtt on_edge_value
 
-  ctx->fbuff = malloc(ctx->fbuffw*ctx->fbuffh*sizeof(float));
+  ctx->fbuff = (float*)malloc(ctx->fbuffw*ctx->fbuffh*sizeof(float));
   for(size_t ii = 0; ii < ctx->fbuffw*ctx->fbuffh; ++ii)
     ctx->fbuff[ii] = INITIAL_SDF_DIST;
   ctx->vg = nvgswCreate(NVG_AUTOW_DEFAULT | NVG_NO_FONTSTASH | NVGSW_PATHS_XC | NVGSW_SDFGEN);

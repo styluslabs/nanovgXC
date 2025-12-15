@@ -14,7 +14,8 @@
 #endif
 
 #ifndef NO_THREADING
-#include "thpool.h"
+#define THPOOL_IMPLEMENTATION
+#include "threadpool.h"
 #endif
 
 #ifdef __cplusplus
@@ -34,8 +35,8 @@ void nvgswSetFramebuffer(NVGcontext* vg, void* dest, int w, int h, int rshift, i
 
 #ifndef NO_THREADING
 typedef void (*taskFn_t)(void*);
-typedef int (*poolSubmit_t)(threadpool, taskFn_t, void*);
-typedef void (*poolWait_t)(threadpool);
+typedef void (*poolSubmit_t)(taskFn_t, void*);
+typedef void (*poolWait_t)(void);
 void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads);
 #endif
 
@@ -168,7 +169,6 @@ struct SWNVGcontext {
   int cedges;
 
 #ifndef NO_THREADING
-  threadpool thpool;
   poolSubmit_t poolSubmit;
   poolWait_t poolWait;
 #endif
@@ -1391,11 +1391,11 @@ static void swnvg__renderFlush(void* uptr)
   if(nthreads > 1) {
 #ifndef NO_THREADING
     for(i = 0; i < nthreads; ++i)
-      gl->poolSubmit(gl->thpool, swnvg__sortEdges, &gl->threads[i]);
-    gl->poolWait(gl->thpool);
+      gl->poolSubmit(swnvg__sortEdges, &gl->threads[i]);
+    gl->poolWait();
     for(i = 0; i < nthreads; ++i)
-      gl->poolSubmit(gl->thpool, swnvg__rasterize, &gl->threads[i]);
-    gl->poolWait(gl->thpool);
+      gl->poolSubmit(swnvg__rasterize, &gl->threads[i]);
+    gl->poolWait();
 #endif
   }
   else {
@@ -1674,10 +1674,10 @@ void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads)
   }
   gl->xthreads = xthreads;
   gl->ythreads = ythreads;
-  gl->poolSubmit = thpool_add_work;
-  gl->poolWait = thpool_wait;
-  gl->thpool = thpool_init(xthreads * ythreads);
-  if (gl->thpool) NVG_LOG("nvg2: %d x %d threads\n", xthreads, ythreads);
+  gl->poolSubmit = poolSubmit;
+  gl->poolWait = poolWait;
+  poolInit(xthreads * ythreads);
+  NVG_LOG("nvg2: %d x %d threads\n", xthreads, ythreads);
 }
 #endif
 
@@ -1720,7 +1720,7 @@ void nvgswDelete(NVGcontext* vg)
 {
 #ifndef NO_THREADING
   SWNVGcontext* gl = (SWNVGcontext*)nvgInternalParams(vg)->userPtr;
-  if (gl->thpool) thpool_destroy(gl->thpool);
+  poolDestroy();
 #endif
   nvgDeleteInternal(vg);
 }
