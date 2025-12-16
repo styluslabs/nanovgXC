@@ -1,5 +1,5 @@
-#ifndef _THPOOL_
-#define _THPOOL_
+#ifndef _THREADPOOL_
+#define _THREADPOOL_
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,7 +16,7 @@ void poolDestroy(void);
 
 #endif
 
-#ifdef THPOOL_IMPLEMENTATION
+#ifdef THREADPOOL_IMPLEMENTATION
 #ifdef __cplusplus
 
 #include <mutex>
@@ -194,7 +194,7 @@ typedef struct thpool_* threadpool;
  * @return threadpool    created threadpool on success,
  *                       NULL on error
  */
-threadpool thpool_init(int num_threads);
+static threadpool thpool_init(int num_threads);
 
 
 /**
@@ -224,7 +224,7 @@ threadpool thpool_init(int num_threads);
  * @param  arg_p         pointer to an argument
  * @return 0 on success, -1 otherwise.
  */
-int thpool_add_work(threadpool, void (*function_p)(void*), void* arg_p);
+static int thpool_add_work(threadpool, void (*function_p)(void*), void* arg_p);
 
 
 /**
@@ -254,7 +254,7 @@ int thpool_add_work(threadpool, void (*function_p)(void*), void* arg_p);
  * @param threadpool     the threadpool to wait for
  * @return nothing
  */
-void thpool_wait(threadpool);
+static void thpool_wait(threadpool);
 
 
 /**
@@ -278,7 +278,7 @@ void thpool_wait(threadpool);
  * @param threadpool    the threadpool where the threads should be paused
  * @return nothing
  */
-void thpool_pause(threadpool);
+static void thpool_pause(threadpool);
 
 
 /**
@@ -294,7 +294,7 @@ void thpool_pause(threadpool);
  * @param threadpool     the threadpool where the threads should be unpaused
  * @return nothing
  */
-void thpool_resume(threadpool);
+static void thpool_resume(threadpool);
 
 
 /**
@@ -316,7 +316,7 @@ void thpool_resume(threadpool);
  * @param threadpool     the threadpool to destroy
  * @return nothing
  */
-void thpool_destroy(threadpool);
+static void thpool_destroy(threadpool);
 
 
 /**
@@ -337,13 +337,14 @@ void thpool_destroy(threadpool);
  * @param threadpool     the threadpool of interest
  * @return integer       number of threads working
  */
-int thpool_num_threads_working(threadpool);
+static int thpool_num_threads_working(threadpool);
 
 
 static threadpool thpool__thpool = NULL;
 
 void poolInit(int nthreads)
 {
+  if (thpool__thpool) thpool_destroy(thpool__thpool);
   thpool__thpool = thpool_init(nthreads);
 }
 
@@ -934,4 +935,4 @@ static void bsem_wait(bsem* bsem_p) {
 	pthread_mutex_unlock(&bsem_p->mutex);
 }
 #endif    // __cplusplus
-#endif    // THPOOL_IMPLEMENTATION
+#endif    // THREADPOOL_IMPLEMENTATION

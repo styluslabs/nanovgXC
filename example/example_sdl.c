@@ -234,7 +234,7 @@ int SDL_main(int argc, char* argv[])
       numThreads = SDL_GetCPUCount();  // * (PLATFORM_MOBILE ? 1 : 2)
     if(numThreads > 1) {
       int xthreads = dispBounds.h > dispBounds.w ? 2 : numThreads/2;  // prefer square-like tiles
-      nvgswSetThreading(vg, xthreads, numThreads/xthreads);
+      nvgswSetThreading(vg, xthreads, numThreads/xthreads, NULL, NULL);
     }
 #endif
     if(swRender == 1) {

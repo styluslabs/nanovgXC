@@ -14,7 +14,7 @@
 #endif
 
 #ifndef NO_THREADING
-#define THPOOL_IMPLEMENTATION
+#define THREADPOOL_IMPLEMENTATION
 #include "threadpool.h"
 #endif
 
@@ -37,7 +37,7 @@ void nvgswSetFramebuffer(NVGcontext* vg, void* dest, int w, int h, int rshift, i
 typedef void (*taskFn_t)(void*);
 typedef void (*poolSubmit_t)(taskFn_t, void*);
 typedef void (*poolWait_t)(void);
-void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads);
+void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads, poolSubmit_t submit, poolWait_t wait);
 #endif
 
 #ifdef __cplusplus
@@ -1660,7 +1660,7 @@ error:
 }
 
 #ifndef NO_THREADING
-void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads)
+void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads, poolSubmit_t submit, poolWait_t wait)
 {
   SWNVGcontext* gl = (SWNVGcontext*)nvgInternalParams(vg)->userPtr;
   int i, nthreads = xthreads*ythreads;
@@ -1674,9 +1674,14 @@ void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads)
   }
   gl->xthreads = xthreads;
   gl->ythreads = ythreads;
-  gl->poolSubmit = poolSubmit;
-  gl->poolWait = poolWait;
-  poolInit(xthreads * ythreads);
+  if (submit && wait) {
+    gl->poolSubmit = submit;
+    gl->poolWait = wait;
+  } else {
+    gl->poolSubmit = poolSubmit;
+    gl->poolWait = poolWait;
+    poolInit(nthreads);
+  }
   NVG_LOG("nvg2: %d x %d threads\n", xthreads, ythreads);
 }
 #endif
@@ -1720,7 +1725,6 @@ void nvgswDelete(NVGcontext* vg)
 {
 #ifndef NO_THREADING
   SWNVGcontext* gl = (SWNVGcontext*)nvgInternalParams(vg)->userPtr;
-  poolDestroy();
 #endif
   nvgDeleteInternal(vg);
 }
