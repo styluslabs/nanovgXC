@@ -13,6 +13,11 @@
 #include "nanovg.h"
 #endif
 
+#ifndef NO_THREADING
+#define THREADPOOL_IMPLEMENTATION
+#include "threadpool.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,10 +33,12 @@ NVGcontext* nvgswCreate(int flags);
 void nvgswDelete(NVGcontext* ctx);
 void nvgswSetFramebuffer(NVGcontext* vg, void* dest, int w, int h, int rshift, int gshift, int bshift, int ashift);
 
+#ifndef NO_THREADING
 typedef void (*taskFn_t)(void*);
 typedef void (*poolSubmit_t)(taskFn_t, void*);
 typedef void (*poolWait_t)(void);
 void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads, poolSubmit_t submit, poolWait_t wait);
+#endif
 
 #ifdef __cplusplus
 }
@@ -161,8 +168,10 @@ struct SWNVGcontext {
   int nedges;
   int cedges;
 
+#ifndef NO_THREADING
   poolSubmit_t poolSubmit;
   poolWait_t poolWait;
+#endif
   SWNVGthreadCtx* threads;
   int xthreads;
   int ythreads;
@@ -1370,17 +1379,24 @@ static void swnvg__rasterize(void* arg)
 static void swnvg__renderFlush(void* uptr)
 {
   SWNVGcontext* gl = (SWNVGcontext*)uptr;
-  int i, nthreads = gl->xthreads*gl->ythreads;
+  int i;
+#ifndef NO_THREADING
+  int nthreads = gl->xthreads*gl->ythreads;
+#else
+  int nthreads = 1;
+#endif
   if (gl->ncalls == 0) return;
   //NVG_LOG("renderFlush: %d calls, %d edges, %d quad verts\n", gl->ncalls, gl->nedges, gl->nverts);
   // we assume dest buffer has already been cleared -- for(i = 0; i < h; i++) memset(&dst[i*stride], 0, w*4);
   if(nthreads > 1) {
+#ifndef NO_THREADING
     for(i = 0; i < nthreads; ++i)
       gl->poolSubmit(swnvg__sortEdges, &gl->threads[i]);
     gl->poolWait();
     for(i = 0; i < nthreads; ++i)
       gl->poolSubmit(swnvg__rasterize, &gl->threads[i]);
     gl->poolWait();
+#endif
   }
   else {
     swnvg__sortEdges(gl->threads);
@@ -1643,6 +1659,7 @@ error:
   return NULL;
 }
 
+#ifndef NO_THREADING
 void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads, poolSubmit_t submit, poolWait_t wait)
 {
   SWNVGcontext* gl = (SWNVGcontext*)nvgInternalParams(vg)->userPtr;
@@ -1657,10 +1674,17 @@ void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads, poolSubmit_t 
   }
   gl->xthreads = xthreads;
   gl->ythreads = ythreads;
-  gl->poolSubmit = submit;
-  gl->poolWait = wait;
+  if (submit && wait) {
+    gl->poolSubmit = submit;
+    gl->poolWait = wait;
+  } else {
+    gl->poolSubmit = poolSubmit;
+    gl->poolWait = poolWait;
+    poolInit(nthreads);
+  }
   NVG_LOG("nvg2: %d x %d threads\n", xthreads, ythreads);
 }
+#endif
 
 void nvgswSetFramebuffer(NVGcontext* vg, void* dest, int w, int h, int rshift, int gshift, int bshift, int ashift)
 {
@@ -1697,9 +1721,12 @@ void nvgswSetFramebuffer(NVGcontext* vg, void* dest, int w, int h, int rshift, i
   }
 }
 
-void nvgswDelete(NVGcontext* ctx)
+void nvgswDelete(NVGcontext* vg)
 {
-  nvgDeleteInternal(ctx);
+#ifndef NO_THREADING
+  SWNVGcontext* gl = (SWNVGcontext*)nvgInternalParams(vg)->userPtr;
+#endif
+  nvgDeleteInternal(vg);
 }
 
 #endif /* NANOVG_SW_IMPLEMENTATION */
