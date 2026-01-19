@@ -19,8 +19,6 @@ extern "C" {
 
 typedef struct NVGcontext NVGcontext;
 
-typedef struct FONStextRow FONStextRow;  // include fontstash.h to use
-
 struct NVGcolor {
   union {
     unsigned int c;
@@ -627,7 +625,8 @@ void nvgTextMetrics(NVGcontext* ctx, float* ascender, float* descender, float* l
 // Breaks the specified text into lines. If end is specified only the sub-string will be used.
 // White space is stripped at the beginning of the rows, the text is split at word boundaries or when new-line characters are encountered.
 // Words longer than the max width are slit at nearest character (i.e. no hyphenation).
-int nvgTextBreakLines(NVGcontext* ctx, const char* string, const char* end, float breakRowWidth, FONStextRow* rows, int maxRows);
+struct FONStextRow;  // include fontstash.h to use
+int nvgTextBreakLines(NVGcontext* ctx, const char* string, const char* end, float breakRowWidth, struct FONStextRow* rows, int maxRows);
 
 //
 // Internal Render API
@@ -710,11 +709,11 @@ NVGcontext* nvgCreateInternal(NVGparams* params);
 void nvgDeleteInternal(NVGcontext* ctx);
 
 // set fontstash (e.g. to allow use of shared fontstash)
-typedef struct FONScontext FONScontext;
-void nvgSetFontStash(NVGcontext* ctx, FONScontext* fs);
+struct FONScontext;
+void nvgSetFontStash(NVGcontext* ctx, struct FONScontext* fs);
 // draw glyph from STB truetype font as filled path - for use with SW backend to generate SDF texture
-typedef struct stbtt_fontinfo stbtt_fontinfo;
-void nvgDrawSTBTTGlyph(NVGcontext* ctx, stbtt_fontinfo* font, float scale, int pad, int glyph);
+struct stbtt_fontinfo;
+void nvgDrawSTBTTGlyph(NVGcontext* ctx, struct stbtt_fontinfo* font, float scale, int pad, int glyph);
 
 NVGparams* nvgInternalParams(NVGcontext* ctx);
 
