@@ -1,6 +1,18 @@
 #ifndef PLATFORM_H
 #define PLATFORM_H
 
+// posix standard needed only for pthreads
+#ifndef NO_THREADING
+#ifdef __unix__
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 199506L
+#endif
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 500
+#endif
+#endif
+#endif
+
 #ifdef __APPLE__
 #include "TargetConditionals.h"
 #endif

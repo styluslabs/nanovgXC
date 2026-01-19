@@ -1,5 +1,6 @@
 # (mostly) project-independent Makefile fragment for Linux
 
+# use g++ instead of gcc to build the software backend with std-c++ threads instead of Posix threads
 CFLAGS = -MMD -Wall -Wshadow -Wno-unused-function
 CXX = g++
 CXXFLAGS = --std=c++14 -fno-rtti -fno-exceptions -Werror=return-type
