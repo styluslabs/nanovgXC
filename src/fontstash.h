@@ -1448,6 +1448,9 @@ int fonsBreakLines(FONSstate* state, const char* string, const char* end, float 
         break;
       // breakable and printable chars
       case 45:  // '-'
+        // don't break after <space>- (if '-' extends beyond line end, we would break at <space>; otherwise,
+        //  we can break on space after '-'; if no space, then likely a negative number, so don't split!
+        if(pcodepoint == 32) { type = FONS_CHAR; break; }
       case 47:  // '/'
       case 0x2013:  // endash
         type = FONS_DASH;
