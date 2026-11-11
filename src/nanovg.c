@@ -60,8 +60,9 @@ struct NVGstate {
   float dashOffset;
   float alpha;
   float xform[6];
-  NVGscissor scissor;
-  float scissorBounds[4];
+  NVGscissor scissor;  // exact scissor, for intersection
+  NVGscissor scissorPx;  // scissor passed to backend: edges rounded to nearest pixel if axis-aligned
+  float scissorBounds[4];  // AABB of scissorPx
   float fontSize;
   float letterSpacing;
   float lineHeight;
@@ -626,6 +627,7 @@ void nvgReset(NVGcontext* ctx)
 
   state->scissor.extent[0] = -1.0f;
   state->scissor.extent[1] = -1.0f;
+  state->scissorPx = state->scissor;
 
   state->fontSize = 16.0f;
   state->letterSpacing = 0.0f;
@@ -940,13 +942,44 @@ int nvgMultiGradient(NVGcontext* ctx, int imageFlags, float* stops, NVGcolor* co
 }
 
 // Scissoring
+// The scissor is kept exact (in floating point) so that repeated intersection, e.g. by nested clip rects, doesn't
+//  accumulate rounding; the scissor used for rendering (scissorPx) has edges rounded to the nearest pixel boundary
+//  if it is axis-aligned, so clipping is exact (no partially covered pixels at edges) and adjacent scissor rects
+//  sharing an edge neither overlap nor leave a gap.  Rotated scissors are used as is.
+static void nvg__updateScissorPx(NVGstate* state)
+{
+  const float* sxform = state->scissor.xform;
+  float ex = state->scissor.extent[0], ey = state->scissor.extent[1];
+  float tex, tey;
+  float* b = state->scissorBounds;
+  state->scissorPx = state->scissor;
+  if (ex < 0) return;  // no scissor
+  // path bounds will be clipped to AABB of scissor
+  tex = ex*nvg__absf(sxform[0]) + ey*nvg__absf(sxform[2]);
+  tey = ex*nvg__absf(sxform[1]) + ey*nvg__absf(sxform[3]);
+  b[0] = sxform[4]-tex;
+  b[1] = sxform[5]-tey;
+  b[2] = sxform[4]+tex;
+  b[3] = sxform[5]+tey;
+  if (sxform[1] == 0 && sxform[2] == 0) {
+    b[0] = floorf(b[0] + 0.5f);
+    b[1] = floorf(b[1] + 0.5f);
+    b[2] = floorf(b[2] + 0.5f);
+    b[3] = floorf(b[3] + 0.5f);
+    nvgTransformIdentity(state->scissorPx.xform);
+    state->scissorPx.xform[4] = 0.5f*(b[0] + b[2]);
+    state->scissorPx.xform[5] = 0.5f*(b[1] + b[3]);
+    state->scissorPx.extent[0] = 0.5f*(b[2] - b[0]);
+    state->scissorPx.extent[1] = 0.5f*(b[3] - b[1]);
+  }
+}
+
 void nvgScissor(NVGcontext* ctx, float x, float y, float w, float h)
 {
   NVGstate* state = nvg__getState(ctx);
   float* sxform = state->scissor.xform;
   float ex = nvg__maxf(0.0f, w)*0.5f;
   float ey = nvg__maxf(0.0f, h)*0.5f;
-  float tex, tey;
 
   nvgTransformIdentity(sxform);
   sxform[4] = x+ex;  //w*0.5f;
@@ -955,14 +988,7 @@ void nvgScissor(NVGcontext* ctx, float x, float y, float w, float h)
 
   state->scissor.extent[0] = ex;  //w*0.5f;
   state->scissor.extent[1] = ey;  //h*0.5f;
-
-  // path bounds will be clipped to AABB of scissor
-  tex = ex*nvg__absf(sxform[0]) + ey*nvg__absf(sxform[2]);
-  tey = ex*nvg__absf(sxform[1]) + ey*nvg__absf(sxform[3]);
-  state->scissorBounds[0] = sxform[4]-tex;
-  state->scissorBounds[1] = sxform[5]-tey;
-  state->scissorBounds[2] = sxform[4]+tex;
-  state->scissorBounds[3] = sxform[5]+tey;
+  nvg__updateScissorPx(state);
 }
 
 static void nvg__isectRects(float* dst,
@@ -1014,6 +1040,7 @@ void nvgResetScissor(NVGcontext* ctx)
   memset(state->scissor.xform, 0, sizeof(state->scissor.xform));
   state->scissor.extent[0] = -1.0f;
   state->scissor.extent[1] = -1.0f;
+  nvg__updateScissorPx(state);
 }
 
 // Global composite operation.
@@ -2030,7 +2057,7 @@ void nvgFill(NVGcontext* ctx)
   nvg__expandFill(ctx);
   nvg__calcBounds(ctx);
 
-  ctx->params.renderFill(ctx->params.userPtr, &fillPaint, state->compositeOperation, &state->scissor, flags,
+  ctx->params.renderFill(ctx->params.userPtr, &fillPaint, state->compositeOperation, &state->scissorPx, flags,
       ctx->cache->bounds, ctx->cache->paths, ctx->cache->npaths);
 
   // clear convex flag so it isn't erroneously applied to a subsequent stroke
@@ -2071,7 +2098,7 @@ void nvgStroke(NVGcontext* ctx)
   nvg__calcBounds(ctx);
 
   ctx->params.renderFill(ctx->params.userPtr, &strokePaint,
-      state->compositeOperation, &state->scissor, flags, cache->bounds, cache->paths, cache->npaths);
+      state->compositeOperation, &state->scissorPx, flags, cache->bounds, cache->paths, cache->npaths);
   // restore path cache
   cache->npaths = npaths0;
   cache->npoints = npoints0;
@@ -2268,7 +2295,7 @@ static void nvg__renderText(NVGcontext* ctx, FONSstate* fons, NVGvertex* verts, 
   // feather is used a flag to enable gamma adjust for text
   //paint.feather = ctx->sRGBTextAdj ? 1 : 0;
   paint.radius = state->fontBlur;
-  ctx->params.renderTriangles(ctx->params.userPtr, &paint, state->compositeOperation, &state->scissor, verts, nverts);
+  ctx->params.renderTriangles(ctx->params.userPtr, &paint, state->compositeOperation, &state->scissorPx, verts, nverts);
 }
 
 static void nvg__drawSTBTTGlyph(NVGcontext* ctx, stbtt_fontinfo* font, int glyph)
