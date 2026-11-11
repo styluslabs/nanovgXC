@@ -51,6 +51,9 @@ void nvgswSetThreading(NVGcontext* vg, int xthreads, int ythreads, poolSubmit_t 
 #define NVG_LOG(...) fprintf(stderr, __VA_ARGS__)
 #endif
 
+// tolerance for numerical error when converting float bounds to pixels
+#define SWNVG__BOUNDS_EPS (1.0f/256)
+
 enum SWNVGpaintType {
   SWNVG_PAINT_NONE = 0,
   SWNVG_PAINT_COLOR,
@@ -1493,12 +1496,14 @@ static void swnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
   call = swnvg__allocCall(gl);
   if (call == NULL) return;
 
-  // using floor/ceil can cause small numerical errors in bounds to turn into whole pixels ... but rounding
-  //  can cause geometry to be incorrectly clipped (see usvgtest)
-  call->bounds[0] = swnvg__clampi((int)bounds[0], 0, gl->width-1);
-  call->bounds[1] = swnvg__clampi((int)bounds[1], 0, gl->height-1);
-  call->bounds[2] = swnvg__clampi((int)(ceilf(bounds[2])), 0, gl->width-1);
-  call->bounds[3] = swnvg__clampi((int)(ceilf(bounds[3])), 0, gl->height-1);
+  // bounds (already clipped to scissor) determine which pixels are filled, so they must be exact: pixel i covers
+  //  [i, i+1), so inclusive pixel bounds are floor(left) to ceil(right) - 1; small tolerance so numerical error
+  //  (e.g. 292.99997 for scissor edge at 293) doesn't add a whole pixel outside scissor (rounding instead of
+  //  floor/ceil would incorrectly clip geometry - see usvgtest)
+  call->bounds[0] = swnvg__clampi((int)floorf(bounds[0] + SWNVG__BOUNDS_EPS), 0, gl->width-1);
+  call->bounds[1] = swnvg__clampi((int)floorf(bounds[1] + SWNVG__BOUNDS_EPS), 0, gl->height-1);
+  call->bounds[2] = swnvg__clampi((int)ceilf(bounds[2] - SWNVG__BOUNDS_EPS) - 1, 0, gl->width-1);
+  call->bounds[3] = swnvg__clampi((int)ceilf(bounds[3] - SWNVG__BOUNDS_EPS) - 1, 0, gl->height-1);
   // note that bounds are inclusive (hence > instead of >=)
   if (call->bounds[0] > call->bounds[2] || call->bounds[1] > call->bounds[3]) {
     --gl->ncalls;
@@ -1559,10 +1564,10 @@ static void swnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOper
     // path bounds will be clipped to AABB of scissor
     float tex = scissor->extent[0]*swnvg__absf(sxform[0]) + scissor->extent[1]*swnvg__absf(sxform[2]);
     float tey = scissor->extent[0]*swnvg__absf(sxform[1]) + scissor->extent[1]*swnvg__absf(sxform[3]);
-    call->bounds[0] = swnvg__maxi(call->bounds[0], floorf(sxform[4]-tex));
-    call->bounds[1] = swnvg__maxi(call->bounds[1], floorf(sxform[5]-tey));
-    call->bounds[2] = swnvg__mini(call->bounds[2], ceilf(sxform[4]+tex));
-    call->bounds[3] = swnvg__mini(call->bounds[3], ceilf(sxform[5]+tey));
+    call->bounds[0] = swnvg__maxi(call->bounds[0], floorf(sxform[4]-tex + SWNVG__BOUNDS_EPS));
+    call->bounds[1] = swnvg__maxi(call->bounds[1], floorf(sxform[5]-tey + SWNVG__BOUNDS_EPS));
+    call->bounds[2] = swnvg__mini(call->bounds[2], ceilf(sxform[4]+tex - SWNVG__BOUNDS_EPS) - 1);
+    call->bounds[3] = swnvg__mini(call->bounds[3], ceilf(sxform[5]+tey - SWNVG__BOUNDS_EPS) - 1);
   }
 
   swnvg__convertPaint(gl, call, paint, scissor, 0);
