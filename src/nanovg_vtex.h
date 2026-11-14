@@ -130,8 +130,6 @@ struct GLNVGcall {
   int type;
   int fragType;
   int image;
-  int fillOffset;
-  int fillCount;
   int triangleOffset;
   int triangleCount;
   int uniformOffset;
@@ -405,8 +403,9 @@ static void glnvg__getUniforms(GLNVGshader* shader)
 }
 
 // Overview of algorithm for antialiased fills:
-// One GL draw call for bounding quad for each path - iterates over edges stored in RGBA32F texture, summing
-//  covered area calculated with areaEdge2 - see nanovg_gl.h for more explanation (incl ASCII art).
+// Bounding quad for each path - iterates over edges stored in RGBA32F texture, summing covered area calculated
+//  with areaEdge2 - see nanovg_gl.h for more explanation (incl ASCII art).  Each quad's vertices carry its range
+//  of edges, so quads w/ the same paint are combined into a single draw call (glnvg__mergeLastCall).
 // For large fills, bounding quad is broken up into tiles and only edges affecting the tile are included, with
 //  edges entirely above tile being merged
 // Alternate approach of combining edges from all paths for tile and making only one draw call per tile per
@@ -1023,30 +1022,6 @@ static GLNVGblend glnvg__blendCompositeOperation(NVGcompositeOperationState op)
   return blend;
 }
 
-// merge consecutive calls w/ identical state and contiguous vertices into a single draw: fill quads carry their
-//  own edge range (see glnvg__quad) and text has no per-call state besides uniforms.  Primitives within a draw
-//  are blended in order, so output is unchanged.  Idempotent, so frame can be flushed again.  fillOffset and
-//  fillCount are not valid for merged calls.
-static void glnvg__mergeCalls(GLNVGcontext* gl)
-{
-  int i, n = 0;
-  for (i = 0; i < gl->ncalls; ++i) {
-    GLNVGcall* c = &gl->calls[i];
-    GLNVGcall* p = n > 0 ? &gl->calls[n-1] : NULL;
-    if (p && c->type == p->type && c->type != GLNVG_CONVEXFILL && c->fragType == p->fragType
-        && c->uniformOffset == p->uniformOffset && c->image == p->image
-        && c->blendFunc.srcRGB == p->blendFunc.srcRGB && c->blendFunc.dstRGB == p->blendFunc.dstRGB
-        && c->blendFunc.srcAlpha == p->blendFunc.srcAlpha && c->blendFunc.dstAlpha == p->blendFunc.dstAlpha
-        && p->triangleOffset + p->triangleCount == c->triangleOffset)
-      p->triangleCount += c->triangleCount;
-    else {
-      if (n != i) gl->calls[n] = *c;
-      ++n;
-    }
-  }
-  gl->ncalls = n;
-}
-
 static void glnvg__renderFlush(void* uptr)
 {
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
@@ -1056,7 +1031,6 @@ static void glnvg__renderFlush(void* uptr)
     glnvg__renderCancel(uptr);
     return;
   }
-  glnvg__mergeCalls(gl);
 #ifdef NVGL_STATS
   double npix = 0, npixedges = 0;
   for(i = 0; i < gl->ncalls; i++) {
@@ -1320,11 +1294,29 @@ static void glnvg__quad(NVGvertex* quad, const float* bounds, float pad, int off
   glnvg__vset2(&quad[5], l, t, offset, nedges);
 }
 
+// merge the last call into the previous one if they have identical state and contiguous vertices, so e.g.
+//  consecutive strokes or text w/ the same paint are a single draw; fill quads carry their own edge range (see
+//  glnvg__quad).  Primitives within a draw are blended in order, so output is unchanged.
+static void glnvg__mergeLastCall(GLNVGcontext* gl)
+{
+  if (gl->ncalls < 2) return;
+  GLNVGcall* c = &gl->calls[gl->ncalls-1];
+  GLNVGcall* p = c - 1;
+  if (c->type == p->type && c->type != GLNVG_CONVEXFILL && c->fragType == p->fragType
+      && c->uniformOffset == p->uniformOffset && c->image == p->image
+      && c->blendFunc.srcRGB == p->blendFunc.srcRGB && c->blendFunc.dstRGB == p->blendFunc.dstRGB
+      && c->blendFunc.srcAlpha == p->blendFunc.srcAlpha && c->blendFunc.dstAlpha == p->blendFunc.dstAlpha
+      && p->triangleOffset + p->triangleCount == c->triangleOffset) {
+    p->triangleCount += c->triangleCount;
+    gl->ncalls--;
+  }
+}
+
 static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperationState compOp,
     NVGscissor* scissor, int flags, const float* bounds, const NVGpath* paths, int npaths)
 {
   GLNVGcontext* gl = (GLNVGcontext*)uptr;
-  int i, edgeidx, triidx, callidx, ncalls = 0, nedges = 0;
+  int i, edgeidx, triidx, ncalls = 0, nedges = 0;
   float ltrb[4];
   for (i = 0; i < npaths; ++i) {
     nedges += paths[i].nfill;
@@ -1353,8 +1345,6 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
   if (flags & NVG_PATH_CONVEX) {
     const NVGpath* path = &paths[0];
     call->type = GLNVG_CONVEXFILL;
-    call->fillOffset = 0;
-    call->fillCount = 0;
     call->triangleCount = path->nfill;
     triidx = glnvg__allocVerts(gl, call->triangleCount);
     if (triidx == -1) goto error;
@@ -1420,30 +1410,22 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
 
     edgeidx = glnvg__allocEdges(gl, nedges);
     if (edgeidx < 0) goto error;
+    // one quad for each non-empty tile (ncalls is the number of these), all in one call
     triidx = glnvg__allocVerts(gl, GLNVG_QUAD_VERTS*ncalls);
     if (triidx < 0) goto error;
-    // create call for each (non-empty) tile
-    if (ncalls > 1 && glnvg__allocCalls(gl, ncalls-1) < 0) goto error;
-    callidx = call0;
+    call->triangleOffset = triidx;
+    call->triangleCount = GLNVG_QUAD_VERTS*ncalls;
 
     for (int ix = 0; ix < xtiles; ++ix) {
       for (int iy = 0; iy < ytiles; ++iy) {
         GLNVGtile* tile = &gl->tiles[xtiles*iy + ix];
         if (tile->nedges == 0) continue;
-        call = &gl->calls[callidx];
         float tilebounds[4] = {ltrb[0] + ix*tilew, ltrb[1] + iy*tileh,
             glnvg__minf(ltrb[2], ltrb[0] + (ix+1)*tilew), glnvg__minf(ltrb[3], ltrb[1] + (iy+1)*tileh)};
         memcpy(&gl->edges[edgeidx], tile->edges, sizeof(NVGvertex) * tile->nedges);
-        if (callidx != call0)
-          memcpy(call, &gl->calls[call0], sizeof(GLNVGcall));
-        call->fillOffset = edgeidx;
-        call->fillCount = tile->nedges;
-        call->triangleOffset = triidx;
-        call->triangleCount = GLNVG_QUAD_VERTS;
         glnvg__quad(&gl->verts[triidx], tilebounds, 0, edgeidx, tile->nedges);
-        edgeidx += call->fillCount;
-        triidx += call->triangleCount;
-        ++callidx;
+        edgeidx += tile->nedges;
+        triidx += GLNVG_QUAD_VERTS;
         tile->nedges = 0;  // reset tile
       }
     }
@@ -1452,23 +1434,23 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
     if (edgeidx < 0) goto error;
     triidx = glnvg__allocVerts(gl, GLNVG_QUAD_VERTS);
     if (triidx < 0) goto error;
-    call->fillOffset = edgeidx;
-    call->fillCount = nedges;
     call->triangleOffset = triidx;
     call->triangleCount = GLNVG_QUAD_VERTS;
+    glnvg__quad(&gl->verts[triidx], ltrb, 0.5f, edgeidx, nedges);
     for (i = 0; i < npaths; i++) {
       memcpy(&gl->edges[edgeidx], paths[i].fill, sizeof(NVGvertex) * paths[i].nfill);
       edgeidx += paths[i].nfill;
     }
-    glnvg__quad(&gl->verts[triidx], ltrb, 0.5f, call->fillOffset, nedges);
   } else {
     float callbnds[4] = {1e6f, 1e6f, -1e6f, -1e6f};
     edgeidx = glnvg__allocEdges(gl, nedges);
     if (edgeidx < 0) goto error;
+    // one quad for each group of paths (separated by restart), all in one call; quads entirely outside ltrb are
+    //  dropped, releasing their vertices and edges from the end of the allocated ranges
     triidx = glnvg__allocVerts(gl, GLNVG_QUAD_VERTS*ncalls);
     if (triidx < 0) goto error;
-    if (ncalls > 1 && glnvg__allocCalls(gl, ncalls - 1) < 0) goto error;
-    callidx = call0;
+    call->triangleOffset = triidx;
+    call->triangleCount = 0;
 
     nedges = 0;
     for (i = 0; i < npaths; i++) {
@@ -1486,31 +1468,28 @@ static void glnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
         callbnds[2] = glnvg__minf(ltrb[2], callbnds[2]);
         callbnds[3] = glnvg__minf(ltrb[3], callbnds[3]);
         if (callbnds[0] >= callbnds[2] || callbnds[1] >= callbnds[3]) {
-          gl->ncalls--;
           gl->nverts -= GLNVG_QUAD_VERTS;
           gl->nedges -= nedges;
           edgeidx -= nedges;
         } else {
-          call = &gl->calls[callidx];
-          if (callidx != call0)
-            memcpy(call, &gl->calls[call0], sizeof(GLNVGcall));
-          call->fillOffset = edgeidx - nedges;
-          call->fillCount = nedges;
-          call->triangleOffset = triidx;
-          call->triangleCount = GLNVG_QUAD_VERTS;
-          glnvg__quad(&gl->verts[triidx], callbnds, 0.5f, call->fillOffset, nedges);
-          triidx += call->triangleCount;
-          ++callidx;
+          glnvg__quad(&gl->verts[triidx], callbnds, 0.5f, edgeidx - nedges, nedges);
+          triidx += GLNVG_QUAD_VERTS;
+          call->triangleCount += GLNVG_QUAD_VERTS;
         }
         nedges = 0;
         callbnds[0] = callbnds[1] = 1e6f;
         callbnds[2] = callbnds[3] = -1e6f;
       }
     }
+    if (call->triangleCount == 0) {  // all offscreen
+      gl->ncalls--;
+      return;
+    }
   }
+  glnvg__mergeLastCall(gl);
   return;
 error:
-  // We get here if first call alloc was ok, but something went wrong before alloc of any additional calls
+  // We get here if call alloc was ok, but something went wrong after
   if (gl->ncalls > 0) gl->ncalls--;
 }
 
@@ -1534,6 +1513,7 @@ static void glnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOper
   call->uniformOffset = glnvg__convertPaint(gl, call, paint, scissor, 0);
   if (call->uniformOffset == -1) goto error;
   call->fragType = GLNVG_FILL_TEXT;
+  glnvg__mergeLastCall(gl);
   return;
 error:
   if (gl->ncalls > 0) gl->ncalls--;  // skip call if allocation error
