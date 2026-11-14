@@ -1059,10 +1059,14 @@ static void swnvg__rasterizeXC(SWNVGthreadCtx* r, SWNVGcall* call)
   int yb0 = swnvg__maxi(call->bounds[1], r->y0);
   int xb1 = swnvg__mini(call->bounds[2], r->x1);
   int yb1 = swnvg__mini(call->bounds[3], r->y1);
+  // coverage deltas are written up to and including column xcov, which must be within the range that is resolved
+  //  (and reset) below: bounds for normal fill, but sdf_radius beyond bounds for SDF generation (sign of distance) -
+  //  otherwise, an edge in the last column doesn't cancel its coverage and padding to the right is "inside"
+  int xcov = (gl->flags & NVGSW_SDFGEN) ? swnvg__mini(xb1 + gl->rshift, r->x1) : xb1;
   SWNVGedge* edge = &gl->edges[call->edgeOffset];
   for(i = 0; i < call->edgeCount; ++i, ++edge) {
     if(edge->y0 == edge->y1) continue;  // skip horizontal edges (still needed for SDF generation)
-    int xedge = swnvg__mini(edge->dir, xb1);
+    int xedge = swnvg__mini(edge->dir, xcov);
     int dir = edge->y0 > edge->y1 ? -1 : 1;
     float ymin = swnvg__minf(edge->y0, edge->y1);
     float ymax = swnvg__maxf(edge->y0, edge->y1);
