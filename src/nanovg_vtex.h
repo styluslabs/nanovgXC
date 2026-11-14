@@ -689,7 +689,20 @@ static int glnvg__renderCreate(void* uptr)
 \n    vec4 result;
 \n    vec2 fpos = vec2(gl_FragCoord.x, viewSize.y - gl_FragCoord.y);
 \n    float W = 0.0f;
-\n    for(int ii = 0; ii < nedges; ++ii) {
+\n    // fetch 4 edges before using any of them, so fetch latencies overlap (compilers generally won't pipeline
+\n    //  fetches across iterations of a loop w/ variable count); summation order is unchanged
+\n    int ii = 0;
+\n    for(; ii + 4 <= nedges; ii += 4) {
+\n      vec4 e0 = edgeFetch(ii);
+\n      vec4 e1 = edgeFetch(ii + 1);
+\n      vec4 e2 = edgeFetch(ii + 2);
+\n      vec4 e3 = edgeFetch(ii + 3);
+\n      W += areaEdge2(e0.zw - fpos, e0.xy - fpos);
+\n      W += areaEdge2(e1.zw - fpos, e1.xy - fpos);
+\n      W += areaEdge2(e2.zw - fpos, e2.xy - fpos);
+\n      W += areaEdge2(e3.zw - fpos, e3.xy - fpos);
+\n    }
+\n    for(; ii < nedges; ++ii) {
 \n      vec4 edge = edgeFetch(ii);
 \n      W += areaEdge2(edge.zw - fpos, edge.xy - fpos);  //noAA ? coversCenter(vb, va) :
 \n    }
